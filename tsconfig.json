@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "noImplicitAny": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "noUnusedLocals": true,
+    "noImplicitReturns": true,
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "es2020",
+      "dom"
+    ]
+  },
+  "include": ["../../ambient.d.ts", "./src/**/*"],
+  "exclude": ["node_modules", "tsc-out", "**/*.spec.ts"]
+}
