@@ -1,11 +1,15 @@
-import { lstat, readdir } from 'fs/promises';
+import { lstat, readdir, utimes } from 'fs/promises';
 import { join as pathJoin } from 'path';
 import { monitorProcess, spawn } from './process-util';
-import { compareCaseSecondary, isAllUppercaseWords, toInt, toMixedCase, toNumber } from '@tubular/util';
+import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, toInt, toMixedCase, toNumber } from '@tubular/util';
 import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
 
-const CAN_MODIFY = false;
+const src = '/Volumes/video';
+const CAN_MODIFY = true;
+const CAN_MODIFY_TIMES = true;
+const NEW_STUFF = new Date('2022-01-01T00:00Z');
+const OLD = new Date('2015-01-01T00:00Z');
 
 interface Counts {
   other: number;
@@ -87,8 +91,11 @@ interface MKVInfo {
   chapters?: [{ num_entries: number }];
   container: {
     properties: {
+      date_local?: string;
+      date_utc?: string;
       duration: number;
       title?: string;
+      writing_application?: string;
     }
   };
   tracks: Track[];
@@ -241,8 +248,6 @@ const subtitlesNames = new Set<string>();
 let updated = 0;
 
 (async function() {
-  const src = '/Volumes/video';
-
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
     const files = (await readdir(dir)).sort(compareCaseSecondary);
     let videos = 0;
@@ -250,7 +255,7 @@ let updated = 0;
 
     for (let file of files) {
       const path = pathJoin(dir, file);
-      const stat = await lstat(path);
+      let stat = await lstat(path);
 
       if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink())
         {}
@@ -305,13 +310,31 @@ let updated = 0;
 
           const chapters = (mkvInfo.chapters || [])[0]?.num_entries || 0;
           const duration = formatTime(mkvInfo.container.properties.duration);
-          const title = mkvInfo.container.properties.title;
+          const cp = mkvInfo.container.properties;
+          const title = cp.title;
+          const app = cp.writing_application;
+          let origDate = (cp.date_utc || cp.date_local) && new Date(cp.date_utc || cp.date_local);
           const suggestedTitle = createTitle(title, file);
           const subtitles = mkvInfo.tracks.filter(t => t.type === 'subtitles') as SubtitlesTrack[];
           const aspect = formatAspectRatio(video[0].properties);
           const resolution = formatResolution(video[0].properties.pixel_dimensions);
           const codec = getCodec(video[0]);
           const d3 = (video[0].properties.stereo_mode ? ' (3D)' : '')
+
+          if (/^HandBrake/.test(app)) {
+            const version = (/^HandBrake\s+(\d+\.\d+)/.exec(app) ?? [])[1];
+            const lowVersion = (compareDottedValues(version, '1.0') < 0);
+            const $ = /\b(\d\d\d\d)(\d\d)(\d\d)(\d\d)?$/.exec(app);
+            let date: Date;
+
+            if ($)
+              date = new Date(`${$[1]}-${$[2]}-${$[3]}T00:00Z`);
+
+            if (date && (!origDate || lowVersion))
+              origDate = date;
+            else if (lowVersion)
+              origDate = OLD;
+          }
 
           if (suggestedTitle)
             editArgs.push('--edit', 'info', '--set', 'title=' + suggestedTitle);
@@ -347,7 +370,7 @@ let updated = 0;
               const pl2 = /dolby pl2/i.test(name);
               const codec = getCodec(track);
               const channels = (tp.audio_channels === 2 && pl2) ? 'Dolby PL2' : channelString(tp);
-              let da = /\bda(\s+([0-9.]+|stereo|mono|dolby pl2))?$/i.test(name);
+              let da = /\bda(\s+([0-9.]+|stereo|mono))?$/i.test(name);
               let newName = '';
               let audioDescr = `:${codec}: ${channels}`;
 
@@ -364,8 +387,14 @@ let updated = 0;
 
               if (da && language)
                 newName = `${language} DA${tp.audio_channels !== 2 ? ' ' + channels : ''}`;
-              else if (name && /instrumental|music|score/i.test(name) && !name.includes('('))
-                newName = `${toMixedCase(name).trim()} (${codec} ${channels})`;
+              else if (name && /instrumental|music|score|original/i.test(name)) {
+                if (!/\(|\b([0-9.]+|stereo|mono)\b/i.test(name)) {
+                  if (codec === 'AC-3')
+                    newName = `${toMixedCase(name).trim()} ${channels}`;
+                  else
+                    newName = `${toMixedCase(name).trim()} (${codec} ${channels})`;
+                }
+              }
               else if (name && !/commentary|cd audio|ld audio|restored/i.test(name)) {
                 if (primaryLang && (lang === primaryLang || !lang || !language))
                   newName = audioDescr.replace(/:/g, '');
@@ -438,7 +467,8 @@ let updated = 0;
                 tp.flag_hearing_impaired = true;
               }
 
-              if (!tp.flag_original && primaryLang === 'en' && lang === 'en') {
+              // If flag_original is *explicitly* false, rather than just not set, don't change it.
+              if (!tp.flag_original && primaryLang === 'en' && lang === 'en' && tp.flag_original !== false) {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'flag-original=1');
                 tp.flag_original = true;
               }
@@ -455,15 +485,23 @@ let updated = 0;
             try {
               if (CAN_MODIFY) {
                 await monitorProcess(spawn('mkvpropedit', editArgs));
-                console.error('    *** Update succeeded');
+                console.log('    *** Update succeeded');
               }
 
               ++updated;
-              console.log(editArgs.slice(1).map(s => escapeArg(s)).join(' '));
+              console.log('    *** Update: ', editArgs.splice(1).map(s => escapeArg(s)).join(' '));
             }
             catch (e) {
               console.error('    *** UPDATE FAILED: ' + e.message);
             }
+          }
+
+          if (CAN_MODIFY && CAN_MODIFY_TIMES && origDate && origDate.getTime() < NEW_STUFF.getTime()) {
+            try {
+              stat = await lstat(path);
+              await utimes(path, stat.atime, origDate);
+            }
+            catch {}
           }
 
           console.log();
