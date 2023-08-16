@@ -7,7 +7,7 @@ import { code2Name, lang3to2 } from './lang';
 
 const src = '/Volumes/video';
 const CAN_MODIFY = true;
-const CAN_MODIFY_TIMES = true;
+const CAN_MODIFY_TIMES = false;
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
 
@@ -246,6 +246,8 @@ function escapeArg(s: string): string {
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
 let updated = 0;
+let hasUnnamedSubtitleTracks = 0;
+let legacyRips = 0;
 
 (async function() {
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
@@ -335,6 +337,9 @@ let updated = 0;
             else if (lowVersion)
               origDate = OLD;
           }
+
+          if (!origDate || stat.mtimeMs < NEW_STUFF.getTime())
+            origDate = stat.mtime;
 
           if (suggestedTitle)
             editArgs.push('--edit', 'info', '--set', 'title=' + suggestedTitle);
@@ -442,6 +447,8 @@ let updated = 0;
             const defaultTrack = subtitles.find(t => t.properties.default_track) ??
                     subtitles.find(t => t.properties.forced_track);
 
+            let hasUnnamed = 0;
+
             for (let i = 1; i <= subtitles.length; ++i) {
               const track = subtitles[i - 1];
               const tp = track.properties;
@@ -476,15 +483,28 @@ let updated = 0;
               if (lang?.length === 2 && tp.track_name?.length === 2 && tp.track_name !== lang)
                 editArgs.push('--edit', 'track:s' + i, '--set', 'name=' + lang);
 
+              if (!tp.track_name)
+                hasUnnamed = 1;
+
               console.log(`     ${i < 10 ? ' ' : ''}Subtitles ${i}: ${descr}` +
                 (track === defaultTrack ? ' (forced)' : '') + trackFlags(tp));
             }
+
+            hasUnnamedSubtitleTracks += hasUnnamed;
           }
+
+          let oldStuff = origDate && origDate.getTime() < NEW_STUFF.getTime();
+
+          legacyRips += oldStuff ? 1 : 0;
 
           if (editArgs.length > 1) {
             try {
               if (CAN_MODIFY) {
                 await monitorProcess(spawn('mkvpropedit', editArgs));
+
+                if (oldStuff)
+                  await utimes(path, stat.atime, new Date(origDate.getTime() + 60000));
+
                 console.log('    *** Update succeeded');
               }
 
@@ -496,7 +516,7 @@ let updated = 0;
             }
           }
 
-          if (CAN_MODIFY && CAN_MODIFY_TIMES && origDate && origDate.getTime() < NEW_STUFF.getTime()) {
+          if (CAN_MODIFY && CAN_MODIFY_TIMES && oldStuff) {
             try {
               stat = await lstat(path);
               await utimes(path, stat.atime, origDate);
@@ -524,6 +544,8 @@ let updated = 0;
   console.log('\nVideo count:', counts.videos);
   console.log('Other count:', counts.other);
   console.log('Updated:', updated);
+  console.log('Legacy rips:', legacyRips);
+  console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
   console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
 })();
