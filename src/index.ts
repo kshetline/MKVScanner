@@ -1,13 +1,19 @@
 import { lstat, readdir, utimes } from 'fs/promises';
-import { join as pathJoin } from 'path';
+import { join as pathJoin, sep as pathSeparator } from 'path';
 import { monitorProcess, spawn } from './process-util';
-import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, toInt, toMixedCase, toNumber } from '@tubular/util';
+import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber } from '@tubular/util';
 import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
 
-const src = '/Volumes/video';
-const CAN_MODIFY = true;
-const CAN_MODIFY_TIMES = false;
+const src = 'V:';
+const CAN_MODIFY = false;
+const CAN_MODIFY_TIMES = true;
+const SKIP_MOVIES = true;
+const SKIP_TV = false;
+const SKIP_EXTRAS = true;
+
+enum ProgramType { MOVIE, TV, EXTRA };
+
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
 
@@ -245,6 +251,7 @@ function escapeArg(s: string): string {
 
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
+const tvTitles = new Set<string>();
 let updated = 0;
 let hasUnnamedSubtitleTracks = 0;
 let legacyRips = 0;
@@ -259,25 +266,48 @@ let legacyRips = 0;
       const path = pathJoin(dir, file);
       let stat = await lstat(path);
 
-      if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink())
+      if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink() || (stat.isFile() && !path.includes('§')))
         {}
       else if (stat.isDirectory()) {
-        if (file.includes('§') || file === '-Extras-')
-          {}
-        else {
-          const counts = await checkDir(path, depth + 1);
+        const counts = await checkDir(path, depth + 1);
 
-          other += counts.other;
-          videos += counts.videos;
-        }
+        other += counts.other;
+        videos += counts.videos;
       }
       else if (/\.(mkv|mv4|mov)$/i) {
+        let pType = ProgramType.MOVIE;
+
+        if (/\b-Extras-\b/i.test(path))
+          pType = ProgramType.EXTRA;
+        else if (/§/.test(path) && !/[\\\/]Movies[\\\/]/.test(path))
+          pType = ProgramType.TV;
+
+        if (pType === ProgramType.MOVIE && SKIP_MOVIES ||
+            pType === ProgramType.TV && SKIP_TV ||
+            pType === ProgramType.EXTRA && SKIP_EXTRAS)
+          continue;
+
         ++videos;
         console.log('file:', file);
 
         if (!file.endsWith('.mkv')) {
           console.log('    *** NOT MKV - skipping ***\n');
           continue;
+        }
+
+        if (pType === ProgramType.TV) {
+          let showTitle = last(path.replace(/^\w:/, '').split(pathSeparator).filter(s => s.includes('§')).map(s => s.trim()
+                .replace(/^\d+\s*-\s*/, '')
+                .replace(/§.*$/, '')
+                .replace(/\s+-\s+\d\d\s+-\s+/, ': ')
+                .replace(/\s+-\s+/, ': ')
+                .replace(/\s*\((TV|SD|4K|(\d*\s*TV series|Joseph Campbell|BBC Earth))\)/g, '').trim()
+                .replace(/(.+), The$/, 'The $1')));
+
+          console.log('    Show title:', showTitle);
+
+          if (showTitle)
+            tvTitles.add(showTitle);
         }
 
         const editArgs = [path];
@@ -292,7 +322,7 @@ let legacyRips = 0;
 
           try {
             const mediaJson = (await monitorProcess(spawn('mediainfo', [path, '--Output=JSON'])));
-            const mediaTracks = (JSON.parse(mediaJson) as MediaWrapper).media.track;
+            const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
             const typeIndices = {} as Record<string, number>;
 
             for (const track of mediaTracks) {
@@ -548,4 +578,5 @@ let legacyRips = 0;
   console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
   console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
+  console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(compareCaseSecondary).join('\n  '));
 })();
