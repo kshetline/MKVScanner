@@ -1,18 +1,18 @@
-import { lstat, readdir, utimes } from 'fs/promises';
+import { existsSync } from 'fs';
+import { lstat, readdir, rename, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { monitorProcess, spawn } from './process-util';
 import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber } from '@tubular/util';
 import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
 
-const src = 'V:';
+const src = (existsSync('V:') ? 'V:' : '/Volumes/video');
 const CAN_MODIFY = false;
 const CAN_MODIFY_TIMES = true;
 const SKIP_MOVIES = true;
 const SKIP_TV = false;
 const SKIP_EXTRAS = true;
-
-enum ProgramType { MOVIE, TV, EXTRA };
+const SHOW_DETAILS = false;
 
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
@@ -23,7 +23,7 @@ interface Counts {
 }
 
 interface MediaTrack {
-  "@type": string;
+  '@type': string;
   BitDepth?: string;
   Channels?: string;
   Channels_Original?: string;
@@ -148,12 +148,12 @@ function formatResolution(dims: string): string {
   else if (w >= 750 || h >= 500)
     return 'HD';
   else
-    return 'SD'
+    return 'SD';
 }
 
 function channelString(track: AudioTrackProperties): string {
-  let channels = track.audio_channels;
-  let sub = (!track.media && channels > 4) ||
+  const channels = track.audio_channels;
+  const sub = (!track.media && channels > 4) ||
     /\bLFE\b/.test(track.media?.ChannelLayout) || /\bLFE\b/.test(track.media?.ChannelPositions) ||
     /\bLFE\b/.test(track.media?.ChannelLayout_Original) || /\bLFE\b/.test(track.media?.ChannelPositions_Original);
 
@@ -194,6 +194,8 @@ function getCodec(track: GeneralTrack): string {
 
   if (codec === 'DTS-HD Master Audio')
     codec = 'DTS-HD MA';
+  else if (codec === 'DTS-HD High Resolution Audio')
+    codec = 'DTS-HD HRA';
   else if (codec === 'AC-3 Dolby Surround EX')
     codec = 'DD EX';
   else if (codec === 'E-AC-3')
@@ -220,8 +222,7 @@ function getCodec(track: GeneralTrack): string {
   return codec;
 }
 
-function trackFlags(props: GeneralTrackProperties): string
-{
+function trackFlags(props: GeneralTrackProperties): string {
   let f = '';
 
   if (props.flag_original)
@@ -256,35 +257,38 @@ let updated = 0;
 let hasUnnamedSubtitleTracks = 0;
 let legacyRips = 0;
 
-(async function() {
+(async function (): Promise<void> {
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
     const files = (await readdir(dir)).sort(compareCaseSecondary);
     let videos = 0;
     let other = 0;
 
-    for (let file of files) {
+    for (const file of files) {
       const path = pathJoin(dir, file);
       let stat = await lstat(path);
 
-      if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink() || (stat.isFile() && !path.includes('§')))
-        {}
+      if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink() || (stat.isFile() && !path.includes('§'))) {
+        // Do nothing
+      }
       else if (stat.isDirectory()) {
         const counts = await checkDir(path, depth + 1);
 
         other += counts.other;
         videos += counts.videos;
       }
-      else if (/\.(mkv|mv4|mov)$/i) {
-        let pType = ProgramType.MOVIE;
+      else if (/\.(mkv|mv4|mov)$/i.test(file)) {
+        let isExtra = false;
+        let isMovie = false;
+        let isTV = false;
 
-        if (/\b-Extras-\b/i.test(path))
-          pType = ProgramType.EXTRA;
-        else if (/§/.test(path) && !/[\\\/]Movies[\\\/]/.test(path))
-          pType = ProgramType.TV;
+        if (/[\\/]-Extras-[\\/]/i.test(path))
+          isExtra = true;
+        else if (/§/.test(path) && !/[\\/]Movies[\\/]/.test(path))
+          isTV = true;
+        else
+          isMovie = true;
 
-        if (pType === ProgramType.MOVIE && SKIP_MOVIES ||
-            pType === ProgramType.TV && SKIP_TV ||
-            pType === ProgramType.EXTRA && SKIP_EXTRAS)
+        if (isMovie && SKIP_MOVIES || isTV && SKIP_TV || isExtra && SKIP_EXTRAS)
           continue;
 
         ++videos;
@@ -295,19 +299,51 @@ let legacyRips = 0;
           continue;
         }
 
-        if (pType === ProgramType.TV) {
-          let showTitle = last(path.replace(/^\w:/, '').split(pathSeparator).filter(s => s.includes('§')).map(s => s.trim()
-                .replace(/^\d+\s*-\s*/, '')
-                .replace(/§.*$/, '')
-                .replace(/\s+-\s+\d\d\s+-\s+/, ': ')
-                .replace(/\s+-\s+/, ': ')
-                .replace(/\s*\((TV|SD|4K|(\d*\s*TV series|Joseph Campbell|BBC Earth))\)/g, '').trim()
-                .replace(/(.+), The$/, 'The $1')));
+        let newFileName = '';
+        let newTitle = '';
 
-          console.log('    Show title:', showTitle);
+        if (isTV) {
+          const seriesTitle = last(path.replace(/^\w:/, '').split(pathSeparator).filter(s => s.includes('§')).map(s => s.trim()
+            .replace(/^\d+\s*-\s*/, '')
+            .replace(/§.*$/, '')
+            .replace(/\s+-\s+\d\d\s+-\s+/, ': ')
+            .replace(/\s+-\s+/, ': ')
+            .replace(/\s*\((TV|SD|4K|(\d*\s*TV series|Joseph Campbell|BBC Earth))\)/g, '').trim()
+            .replace(/(.+), The$/, 'The $1')));
 
-          if (showTitle)
-            tvTitles.add(showTitle);
+          if (!seriesTitle) {
+            console.warn('    *** Failed to extract TV series title');
+            continue;
+          }
+
+          tvTitles.add(seriesTitle);
+
+          let $ = /\s*-\s*(S(\d{1,2}))?(E(\d{1,2})(?:&\d\d)?)\s*-\s*(.+)(\.\w{2,4})$/.exec(file);
+
+          if (!$) {
+            $ = /^(\D?)(\d{1,2})(?:\s*-\s*)(.+)(\.\w{2,4})$/.exec(file);
+
+            if (!$) {
+              console.warn('    *** Failed to extract TV episode');
+              continue;
+            }
+
+            $.splice(0, 1, '', '', '');
+          }
+
+          const safeSeriesTitle = seriesTitle.replace(/[^-.!'"_()[\]0-9A-Za-z\u00FF-\uFFFF]/g, ' ').replace(/\s+/g, ' ').trim();
+          const season = toInt($[2] || '1');
+          const episode = toInt($[4]);
+          const episodeTitle = $[5];
+          const restoredTitle = episodeTitle.replace(/：/g, ':').replace(/？/g, '?').replace(/([a-z])'([a-z])/gi, '$1’$2');
+          const ext = $[6];
+          const se = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
+
+          newFileName = `${safeSeriesTitle} - ${se} - ${episodeTitle}${ext}`;
+          newTitle = `${seriesTitle} • ${se} • ${restoredTitle}`;
+
+          console.log(newFileName);
+          console.log(newTitle);
         }
 
         const editArgs = [path];
@@ -346,12 +382,12 @@ let legacyRips = 0;
           const title = cp.title;
           const app = cp.writing_application;
           let origDate = (cp.date_utc || cp.date_local) && new Date(cp.date_utc || cp.date_local);
-          const suggestedTitle = createTitle(title, file);
+          const suggestedTitle = newTitle || createTitle(title, file);
           const subtitles = mkvInfo.tracks.filter(t => t.type === 'subtitles') as SubtitlesTrack[];
           const aspect = formatAspectRatio(video[0].properties);
           const resolution = formatResolution(video[0].properties.pixel_dimensions);
           const codec = getCodec(video[0]);
-          const d3 = (video[0].properties.stereo_mode ? ' (3D)' : '')
+          const d3 = (video[0].properties.stereo_mode ? ' (3D)' : '');
 
           if (/^HandBrake/.test(app)) {
             const version = (/^HandBrake\s+(\d+\.\d+)/.exec(app) ?? [])[1];
@@ -371,14 +407,16 @@ let legacyRips = 0;
           if (!origDate || stat.mtimeMs < NEW_STUFF.getTime())
             origDate = stat.mtime;
 
-          if (suggestedTitle)
+          if (suggestedTitle && (!isTV || !title.includes('•')))
             editArgs.push('--edit', 'info', '--set', 'title=' + suggestedTitle);
 
-          console.log('            Title:', (title || '(untitled)') + (suggestedTitle ? ' --> ' + suggestedTitle : ''));
-          console.log('         Duration:', duration + (chapters ? ', ' + chapters + ' chapters' : ''));
-          console.log('            Video:', video.length < 1 ? 'NONE' :
-            `${codec} ${resolution}, ${aspect}${d3}` +
-            (video.length > 1 ? `, plus ${video.length - 1} other track${video.length > 2 ? 's' : ''}` : ''));
+          if (SHOW_DETAILS) {
+            console.log('            Title:', (title || '(untitled)') + (suggestedTitle ? ' --> ' + suggestedTitle : ''));
+            console.log('         Duration:', duration + (chapters ? ', ' + chapters + ' chapters' : ''));
+            console.log('            Video:', video.length < 1 ? 'NONE' :
+              `${codec} ${resolution}, ${aspect}${d3}` +
+              (video.length > 1 ? `, plus ${video.length - 1} other track${video.length > 2 ? 's' : ''}` : ''));
+          }
 
           let primaryLang = '';
 
@@ -463,14 +501,15 @@ let legacyRips = 0;
                 editArgs.push('--edit', 'track:a' + i, '--set', 'name=' + name);
               }
 
-              audioNames.add(lang + ':' + (name ? name : ''));
-              audioDescr = ((name ? name : '(unnamed)' ) + (audioDescr !== name ? ` [${audioDescr}]` : '')).trim();
+              audioNames.add(lang + ':' + (name || ''));
+              audioDescr = ((name || '(unnamed)') + (audioDescr !== name ? ` [${audioDescr}]` : '')).trim();
 
-              console.log(`         ${i < 10 ? ' ' : ''}Audio ${i}: ${audioDescr}` +
-                (track === defaultTrack ? ' (primary audio)' : '') + trackFlags(tp));
+              if (SHOW_DETAILS)
+                console.log(`         ${i < 10 ? ' ' : ''}Audio ${i}: ${audioDescr}` +
+                  (track === defaultTrack ? ' (primary audio)' : '') + trackFlags(tp));
             }
           }
-          else
+          else if (SHOW_DETAILS)
             console.log('            Audio: NONE');
 
           if (subtitles.length > 0) {
@@ -485,7 +524,7 @@ let legacyRips = 0;
               const name = tp.track_name;
               const lang = getLanguage(tp);
               const codec = getCodec(track);
-              const descr = (codec + ' ' + (lang ? lang : '??') + ', ' + (name ? name : '(unnamed)')).trim();
+              const descr = (codec + ' ' + (lang || '??') + ', ' + (name || '(unnamed)')).trim();
 
               subtitlesNames.add(lang + ':' + (tp.track_name ? tp.track_name : ''));
 
@@ -496,7 +535,7 @@ let legacyRips = 0;
 
               if (tp.track_name?.toLowerCase() === 'description' && lang === 'en') {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'name=English SDH');
-                tp.track_name = "English SDH";
+                tp.track_name = 'English SDH';
               }
 
               if (!tp.flag_hearing_impaired && /\bsdh$/i.test(tp.track_name)) {
@@ -516,14 +555,15 @@ let legacyRips = 0;
               if (!tp.track_name)
                 hasUnnamed = 1;
 
-              console.log(`     ${i < 10 ? ' ' : ''}Subtitles ${i}: ${descr}` +
-                (track === defaultTrack ? ' (forced)' : '') + trackFlags(tp));
+              if (SHOW_DETAILS)
+                console.log(`     ${i < 10 ? ' ' : ''}Subtitles ${i}: ${descr}` +
+                  (track === defaultTrack ? ' (forced)' : '') + trackFlags(tp));
             }
 
             hasUnnamedSubtitleTracks += hasUnnamed;
           }
 
-          let oldStuff = origDate && origDate.getTime() < NEW_STUFF.getTime();
+          const oldStuff = origDate && origDate.getTime() < NEW_STUFF.getTime();
 
           legacyRips += oldStuff ? 1 : 0;
 
@@ -539,10 +579,21 @@ let legacyRips = 0;
               }
 
               ++updated;
-              console.log('    *** Update: ', editArgs.splice(1).map(s => escapeArg(s)).join(' '));
+
+              if (SHOW_DETAILS)
+                console.log('    *** Update: ', editArgs.splice(1).map(s => escapeArg(s)).join(' '));
             }
             catch (e) {
               console.error('    *** UPDATE FAILED: ' + e.message);
+            }
+          }
+
+          if (CAN_MODIFY && newFileName && file !== newFileName) {
+            try {
+              await rename(path, pathJoin(dir, newFileName));
+            }
+            catch (e) {
+              console.error('    *** RENAME FAILED: ' + e.message);
             }
           }
 
