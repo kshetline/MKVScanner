@@ -281,7 +281,7 @@ let tvStorage = 0;
 
     for (const file of files) {
       const path = pathJoin(dir, file);
-      let stat = await lstat(path);
+      const stat = await lstat(path);
 
       if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink()) {
         // Do nothing
@@ -607,7 +607,7 @@ let tvStorage = 0;
               if (CAN_MODIFY) {
                 await monitorProcess(spawn('mkvpropedit', editArgs));
 
-                if (oldStuff)
+                if (oldStuff && CAN_MODIFY_TIMES)
                   await utimes(path, stat.atime, new Date(origDate.getTime() + 60000));
 
                 console.log('    *** Update succeeded');
@@ -630,14 +630,6 @@ let tvStorage = 0;
             catch (e) {
               console.error('    *** RENAME FAILED: ' + e.message);
             }
-          }
-
-          if (CAN_MODIFY && CAN_MODIFY_TIMES && oldStuff) {
-            try {
-              stat = await lstat(path);
-              await utimes(path, stat.atime, origDate);
-            }
-            catch {}
           }
 
           console.log();
