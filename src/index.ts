@@ -7,12 +7,12 @@ import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
 
 const src = (existsSync('V:') ? 'V:' : '/Volumes/video');
-const CAN_MODIFY = false;
+const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
-const SKIP_MOVIES = true;
+const SKIP_MOVIES = false;
 const SKIP_TV = false;
 const SKIP_EXTRAS = true;
-const SHOW_DETAILS = false;
+const SHOW_DETAILS = true;
 
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
@@ -172,7 +172,7 @@ function createTitle(title: string, name: string): string {
     !/\b(DISC (\d|i)|3D|BLU-RAY|ULTRA HD)/i.test(title) && !/(\bMARVEL|:UE)/.test(title))
     return '';
 
-  let newTitle = name.replace(/\.\w+$/, '').replace(/\s*\((2D|2K|3D|4K)\)/g, '').replace(/^\d{1,2}\s+-\s+/, '');
+  let newTitle = toNonFileName(name.replace(/\.\w+$/, '').replace(/\s*\((2D|2K|3D|4K)\)/g, '').replace(/^\d{1,2}\s+-\s+/, ''));
 
   if (!/:/.test(newTitle))
     newTitle = newTitle.replace(/\s+-\s+/g, ': ');
@@ -250,12 +250,28 @@ function escapeArg(s: string): string {
   return s;
 }
 
+function toNonFileName(s: string): string {
+  return s.replace(/：/g, ':').replace(/？/g, '?').replace(/．/g, '.').replace(/([a-z])'([a-z])/gi, '$1’$2');
+}
+
+function normalizeTitle(s: string): string {
+  return s.replace(/\s+\([^(]*\b(cut|edition|version)\)/i, '');
+}
+
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
+const movieTitles = new Set<string>();
 const tvTitles = new Set<string>();
+const tvEpisodes = new Set<string>();
 let updated = 0;
 let hasUnnamedSubtitleTracks = 0;
 let legacyRips = 0;
+let extras = 0;
+let extrasStorage = 0;
+let movies = 0;
+let movieStorage = 0;
+let tvShows = 0;
+let tvStorage = 0;
 
 (async function (): Promise<void> {
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
@@ -267,10 +283,13 @@ let legacyRips = 0;
       const path = pathJoin(dir, file);
       let stat = await lstat(path);
 
-      if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink() || (stat.isFile() && !path.includes('§'))) {
+      if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink()) {
         // Do nothing
       }
       else if (stat.isDirectory()) {
+        if (file === 'Home movies')
+          continue;
+
         const counts = await checkDir(path, depth + 1);
 
         other += counts.other;
@@ -281,12 +300,21 @@ let legacyRips = 0;
         let isMovie = false;
         let isTV = false;
 
-        if (/[\\/]-Extras-[\\/]/i.test(path))
+        if (/[\\/]-Extras-[\\/]/i.test(path)) {
           isExtra = true;
-        else if (/§/.test(path) && !/[\\/]Movies[\\/]/.test(path))
+          ++extras;
+          extrasStorage += stat.size;
+        }
+        else if (/§/.test(path) && !/[\\/]Movies[\\/]/.test(path)) {
           isTV = true;
-        else
+          ++tvShows;
+          tvStorage += stat.size;
+        }
+        else {
           isMovie = true;
+          ++movies;
+          movieStorage += stat.size;
+        }
 
         if (isMovie && SKIP_MOVIES || isTV && SKIP_TV || isExtra && SKIP_EXTRAS)
           continue;
@@ -331,16 +359,18 @@ let legacyRips = 0;
             $.splice(0, 1, '', '', '');
           }
 
-          const safeSeriesTitle = seriesTitle.replace(/[^-.!'"_()[\]0-9A-Za-z\u00FF-\uFFFF]/g, ' ').replace(/\s+/g, ' ').trim();
+          const safeSeriesTitle = seriesTitle.replace(/[^-.!'"_()[\]0-9A-Za-z\u00FF-\uFFFF]/g, ' ')
+            .replace(/\s+/g, ' ').replace('(Brett)', '(1984)').trim();
           const season = toInt($[2] || '1');
           const episode = toInt($[4]);
           const episodeTitle = $[5];
-          const restoredTitle = episodeTitle.replace(/：/g, ':').replace(/？/g, '?').replace(/([a-z])'([a-z])/gi, '$1’$2');
+          const restoredTitle = toNonFileName(episodeTitle);
           const ext = $[6];
           const se = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
 
           newFileName = `${safeSeriesTitle} - ${se} - ${episodeTitle}${ext}`;
           newTitle = `${seriesTitle} • ${se} • ${restoredTitle}`;
+          tvEpisodes.add(`${safeSeriesTitle}•${se}`);
 
           console.log(newFileName);
           console.log(newTitle);
@@ -382,7 +412,7 @@ let legacyRips = 0;
           const title = cp.title;
           const app = cp.writing_application;
           let origDate = (cp.date_utc || cp.date_local) && new Date(cp.date_utc || cp.date_local);
-          const suggestedTitle = newTitle || createTitle(title, file);
+          let suggestedTitle = newTitle || createTitle(title, file);
           const subtitles = mkvInfo.tracks.filter(t => t.type === 'subtitles') as SubtitlesTrack[];
           const aspect = formatAspectRatio(video[0].properties);
           const resolution = formatResolution(video[0].properties.pixel_dimensions);
@@ -407,8 +437,13 @@ let legacyRips = 0;
           if (!origDate || stat.mtimeMs < NEW_STUFF.getTime())
             origDate = stat.mtime;
 
-          if (suggestedTitle && (!isTV || !title.includes('•')))
+          if ((suggestedTitle || title) && isMovie)
+            movieTitles.add(normalizeTitle(suggestedTitle || title));
+
+          if (suggestedTitle && suggestedTitle !== title && (!isTV || !title?.includes('•')))
             editArgs.push('--edit', 'info', '--set', 'title=' + suggestedTitle);
+          else
+            suggestedTitle = undefined;
 
           if (SHOW_DETAILS) {
             console.log('            Title:', (title || '(untitled)') + (suggestedTitle ? ' --> ' + suggestedTitle : ''));
@@ -623,6 +658,9 @@ let legacyRips = 0;
   const counts = await checkDir(src);
 
   console.log('\nVideo count:', counts.videos);
+  console.log(`Movies (raw): ${movies}, TV episodes (raw): ${tvShows}, Extras: ${extras}`);
+  console.log(`Movies (unique): ${movieTitles.size}, TV episodes (unique): ${tvEpisodes.size}`);
+  console.log(`Movies: ${(movieStorage / 1E9).toFixed(2)}GB, TV: ${(tvStorage / 1E9).toFixed(2)}GB, Extras: ${(extrasStorage / 1E9).toFixed(2)}GB`);
   console.log('Other count:', counts.other);
   console.log('Updated:', updated);
   console.log('Legacy rips:', legacyRips);
@@ -630,4 +668,5 @@ let legacyRips = 0;
   console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(compareCaseSecondary).join('\n  '));
+  console.log('\nUnique movie show titles:\n ', Array.from(movieTitles).sort(compareCaseSecondary).join('\n  '));
 })();
