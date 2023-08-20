@@ -585,11 +585,11 @@ let tvStorage = 0;
                 tp.track_name = 'English SDH';
               }
 
-              if (!tp.flag_hearing_impaired && /\bsdh$/i.test(tp.track_name)) {
+              if (!tp.flag_hearing_impaired && /\bsdh\b/i.test(tp.track_name)) {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'flag-hearing-impaired=1');
                 tp.flag_hearing_impaired = true;
               }
-              else if (tp.flag_hearing_impaired && !/\bsdh$/i.test(tp.track_name)) {
+              else if (tp.flag_hearing_impaired && !/\bsdh\b/i.test(tp.track_name)) {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'flag-hearing-impaired=0');
                 tp.flag_hearing_impaired = false;
               }
