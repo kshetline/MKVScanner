@@ -440,7 +440,7 @@ let tvStorage = 0;
           if ((suggestedTitle || title) && isMovie)
             movieTitles.add(normalizeTitle(suggestedTitle || title));
 
-          if (suggestedTitle && suggestedTitle !== title && (!isTV || !title?.includes('•')))
+          if (suggestedTitle && suggestedTitle !== title && !/[:?•’]/.test(title))
             editArgs.push('--edit', 'info', '--set', 'title=' + suggestedTitle);
           else
             suggestedTitle = undefined;
@@ -520,10 +520,18 @@ let tvStorage = 0;
                 editArgs.push('--edit', 'track:a' + i, '--set', 'flag-commentary=1');
                 tp.flag_commentary = true;
               }
+              else if (tp.flag_commentary && !/commentary/i.test(name)) {
+                editArgs.push('--edit', 'track:a' + i, '--set', 'flag-commentary=0');
+                tp.flag_commentary = false;
+              }
 
               if (!tp.flag_visual_impaired && da) {
                 editArgs.push('--edit', 'track:a' + i, '--set', 'flag-visual-impaired=1');
                 tp.flag_visual_impaired = true;
+              }
+              else if (tp.flag_visual_impaired && !da) {
+                editArgs.push('--edit', 'track:a' + i, '--set', 'flag-visual-impaired=0');
+                tp.flag_visual_impaired = false;
               }
 
               if (!tp.flag_original && primaryLang === 'en' && lang === 'en') {
@@ -556,16 +564,20 @@ let tvStorage = 0;
             for (let i = 1; i <= subtitles.length; ++i) {
               const track = subtitles[i - 1];
               const tp = track.properties;
-              const name = tp.track_name;
+              let name = tp.track_name;
               const lang = getLanguage(tp);
               const codec = getCodec(track);
-              const descr = (codec + ' ' + (lang || '??') + ', ' + (name || '(unnamed)')).trim();
+              const baseDescr = (codec + ' ' + (lang || '??') + ', ').trimStart();
 
               subtitlesNames.add(lang + ':' + (tp.track_name ? tp.track_name : ''));
 
-              if (!tp.flag_commentary && /commentary/i.test(tp.track_name)) {
+              if (!tp.flag_commentary && /commentary|info/i.test(tp.track_name)) {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'flag-commentary=1');
                 tp.flag_commentary = true;
+              }
+              else if (tp.flag_commentary && !/commentary|info/i.test(tp.track_name)) {
+                editArgs.push('--edit', 'track:s' + i, '--set', 'flag-commentary=0');
+                tp.flag_commentary = false;
               }
 
               if (tp.track_name?.toLowerCase() === 'description' && lang === 'en') {
@@ -577,6 +589,10 @@ let tvStorage = 0;
                 editArgs.push('--edit', 'track:s' + i, '--set', 'flag-hearing-impaired=1');
                 tp.flag_hearing_impaired = true;
               }
+              else if (tp.flag_hearing_impaired && !/\bsdh$/i.test(tp.track_name)) {
+                editArgs.push('--edit', 'track:s' + i, '--set', 'flag-hearing-impaired=0');
+                tp.flag_hearing_impaired = false;
+              }
 
               // If flag_original is *explicitly* false, rather than just not set, don't change it.
               if (!tp.flag_original && primaryLang === 'en' && lang === 'en' && tp.flag_original !== false) {
@@ -584,14 +600,16 @@ let tvStorage = 0;
                 tp.flag_original = true;
               }
 
-              if (lang?.length === 2 && tp.track_name?.length === 2 && tp.track_name !== lang)
+              if (lang?.length === 2 && tp.track_name?.length === 2 && tp.track_name !== lang) {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'name=' + lang);
+                name = lang;
+              }
 
-              if (!tp.track_name)
+              if (!name)
                 hasUnnamed = 1;
 
               if (SHOW_DETAILS)
-                console.log(`     ${i < 10 ? ' ' : ''}Subtitles ${i}: ${descr}` +
+                console.log(`     ${i < 10 ? ' ' : ''}Subtitles ${i}: ${(baseDescr + (name || '(unnamed)')).trim()}` +
                   (track === defaultTrack ? ' (forced)' : '') + trackFlags(tp));
             }
 
