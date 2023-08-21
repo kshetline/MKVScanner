@@ -152,6 +152,9 @@ function formatResolution(dims: string): string {
 }
 
 function channelString(track: AudioTrackProperties): string {
+  // The code below is a bit iffy. It's working for me for now, but there's some stuff I don't
+  // fully understand about channel info, particularly how the `XXX_Original` variants are
+  // supposed to work. No answers from the mediainfo forum yet!
   const channels = track.audio_channels;
   const sub = (!track.media && channels > 4) ||
     /\bLFE\b/.test(track.media?.ChannelLayout) || /\bLFE\b/.test(track.media?.ChannelPositions) ||
@@ -451,7 +454,7 @@ let errorCount = 0;
             console.log('         Duration:', duration + (chapters ? ', ' + chapters + ' chapters' : ''));
             console.log('            Video:', video.length < 1 ? 'NONE' :
               `${codec} ${resolution}, ${aspect}${d3}` +
-              (video.length > 1 ? `, plus ${video.length - 1} other track${video.length > 2 ? 's' : ''}` : ''));
+              (video.length > 1 ? `, plus ${video.length - 1} other video track${video.length > 2 ? 's' : ''}` : ''));
           }
 
           let primaryLang = '';
