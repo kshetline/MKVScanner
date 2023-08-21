@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { lstat, readdir, rename, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
-import { monitorProcess, spawn } from './process-util';
+import { ErrorMode, monitorProcess, spawn } from './process-util';
 import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber } from '@tubular/util';
 import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
@@ -272,6 +272,7 @@ let movies = 0;
 let movieStorage = 0;
 let tvShows = 0;
 let tvStorage = 0;
+let errorCount = 0;
 
 (async function (): Promise<void> {
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
@@ -585,11 +586,11 @@ let tvStorage = 0;
                 tp.track_name = 'English SDH';
               }
 
-              if (!tp.flag_hearing_impaired && /\bsdh\b/i.test(tp.track_name)) {
+              if (!tp.flag_hearing_impaired && /\bSDH\b/.test(tp.track_name)) {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'flag-hearing-impaired=1');
                 tp.flag_hearing_impaired = true;
               }
-              else if (tp.flag_hearing_impaired && !/\bsdh\b/i.test(tp.track_name)) {
+              else if (tp.flag_hearing_impaired && !/\bSDH\b/.test(tp.track_name)) {
                 editArgs.push('--edit', 'track:s' + i, '--set', 'flag-hearing-impaired=0');
                 tp.flag_hearing_impaired = false;
               }
@@ -623,7 +624,7 @@ let tvStorage = 0;
           if (editArgs.length > 1) {
             try {
               if (CAN_MODIFY) {
-                await monitorProcess(spawn('mkvpropedit', editArgs));
+                await monitorProcess(spawn('mkvpropedit', editArgs), null, ErrorMode.ANY_ERROR);
 
                 if (oldStuff && CAN_MODIFY_TIMES)
                   await utimes(path, stat.atime, new Date(origDate.getTime() + 60000));
@@ -637,6 +638,7 @@ let tvStorage = 0;
                 console.log('    *** Update: ', editArgs.splice(1).map(s => escapeArg(s)).join(' '));
             }
             catch (e) {
+              ++errorCount;
               console.error('    *** UPDATE FAILED: ' + e.message);
             }
           }
@@ -646,6 +648,7 @@ let tvStorage = 0;
               await rename(path, pathJoin(dir, newFileName));
             }
             catch (e) {
+              ++errorCount;
               console.error('    *** RENAME FAILED: ' + e.message);
             }
           }
@@ -658,7 +661,7 @@ let tvStorage = 0;
       }
       else {
         ++other;
-        console.log('other:', file);
+        console.log('other:', file + '\n');
       }
     }
 
@@ -679,4 +682,5 @@ let tvStorage = 0;
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique movie show titles:\n ', Array.from(movieTitles).sort(compareCaseSecondary).join('\n  '));
+  console.log('Errors:', errorCount);
 })();
