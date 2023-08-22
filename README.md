@@ -16,8 +16,8 @@ This is a list of some peculiarities of my file organization, track naming conve
 - I use the full name of a language, like "English" or "French" for full subtitle tracks. I use two-letter language codes, like 'en' or 'fr', for subtitle tracks which contain only the forced subtitles needed for a particular language.
 - I'm fond of keeping some normally-disallowed characters in file names, like question marks `?` and colons `:` by using the Unicode full-width variants of these characters instead.
 - Every movie and TV show is wrapped inside a folder, so the root level of my collection has no files, only folders. The names of these folders are modified as needed to maintain sensible alphabetic sorting, like "Adventures of Baron Munchausen, The" rather than "The Adventures of Baron Munchausen".
-- TV shows are organized inside a folder bearing the show's name, with folders for each season inside of that folder. A Season 1 folder may be omitted when there is only one season, and no future seasons are expected.
-- All bonus materials and extras are stored in folders names "-Extras-".
+- TV shows are organized inside a folder bearing the show's name, with folders for each season inside that folder. A Season 1 folder may be omitted when there is only one season, and no future seasons are expected.
+- All bonus materials and extras are stored in folders named "-Extras-", or containing the words "Bonus Disc".
 
 Some sample output:
 

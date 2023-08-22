@@ -304,7 +304,7 @@ let errorCount = 0;
         let isMovie = false;
         let isTV = false;
 
-        if (/[\\/]-Extras-[\\/]/i.test(path)) {
+        if (/[\\/](-Extras-|.*Bonus Disc.*)[\\/]/i.test(path)) {
           isExtra = true;
           ++extras;
           extrasStorage += stat.size;
