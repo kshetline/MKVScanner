@@ -287,7 +287,7 @@ let errorCount = 0;
       const path = pathJoin(dir, file);
       const stat = await lstat(path);
 
-      if (file.startsWith('.') || file.endsWith('~') || stat.isSymbolicLink()) {
+      if (file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
         // Do nothing
       }
       else if (stat.isDirectory()) {
