@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import { lstat, readdir, rename, utimes } from 'fs/promises';
+import { lstat, readdir, rename, unlink, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
 import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber } from '@tubular/util';
@@ -11,8 +11,9 @@ const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
 const SKIP_MOVIES = false;
 const SKIP_TV = false;
-const SKIP_EXTRAS = true;
+const SKIP_EXTRAS = false;
 const SHOW_DETAILS = true;
+const UPDATE_EXTRAS_METADATA = false;
 
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
@@ -261,11 +262,29 @@ function normalizeTitle(s: string): string {
   return s.replace(/\s+\([^(]*\b(cut|edition|version)\)/i, '');
 }
 
+async function attemptFileRepair(path: string): Promise<boolean> {
+  const backupPath = path.replace(/\.mkv$/i, '.bak.mkv');
+
+  try {
+    await rename(path, backupPath);
+    await monitorProcess(spawn('mkvmerge', ['-o', path, backupPath]));
+    await unlink(backupPath);
+  }
+  catch (e) {
+    console.error('Error during attempted file repair:', e.message);
+    return false;
+  }
+
+  return true;
+}
+
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
 const movieTitles = new Set<string>();
 const tvTitles = new Set<string>();
 const tvEpisodes = new Set<string>();
+const corruptFiles = [] as string[];
+let corruptFilesRepaired = 0;
 let updated = 0;
 let hasUnnamedSubtitleTracks = 0;
 let legacyRips = 0;
@@ -283,6 +302,7 @@ let errorCount = 0;
     let videos = 0;
     let other = 0;
 
+    fileLoop:
     for (const file of files) {
       const path = pathJoin(dir, file);
       const stat = await lstat(path);
@@ -387,23 +407,53 @@ let errorCount = 0;
              // uid values exceed available numeric precision. Turn into strings instead.
             .replace(/("uid":\s+)(\d+)/g, '$1"$2"');
           const mkvInfo = JSON.parse(mkvJson) as MKVInfo;
+
           const video = mkvInfo.tracks.filter(t => t.type === 'video') as VideoTrack[];
           const audio = mkvInfo.tracks.filter(t => t.type === 'audio') as AudioTrack[];
 
           try {
-            const mediaJson = (await monitorProcess(spawn('mediainfo', [path, '--Output=JSON'])));
-            const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
-            const typeIndices = {} as Record<string, number>;
+            for (let attempt = 1; attempt <= 2; ++attempt) {
+              const mediaJson = (await monitorProcess(spawn('mediainfo', [path, '--Output=JSON'])));
+              const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
+              const typeIndices = {} as Record<string, number>;
 
-            for (const track of mediaTracks) {
-              const type = track['@type'].toLowerCase();
-              const index = (typeIndices[type] ?? -1) + 1;
-              const mkvSet = (type === 'video' ? video : type === 'audio' ? audio : []);
+              if (mediaTracks.length < 2) {
+                corruptFiles.push(path);
 
-              typeIndices[type] = index;
+                if (attempt === 2 || !CAN_MODIFY) {
+                  console.error('   *** CORRUPTED FILE WAS NOT REPAIRED\n', path);
+                  continue fileLoop;
+                }
+                else {
+                  ++errorCount;
+                  console.warn('   *** CORRUPTED: %s', path);
+                  console.warn('   *** Attempting repair...');
 
-              if (mkvSet[index]?.properties)
-                mkvSet[index].properties.media = track;
+                  if (await attemptFileRepair(path)) {
+                    ++corruptFilesRepaired;
+                    corruptFiles.pop();
+                    corruptFiles.push(path + ' (repaired)');
+                    continue;
+                  }
+                  else {
+                    console.error('   *** CORRUPTED FILE COULD NOT BE REPAIRED\n', path);
+                    continue fileLoop;
+                  }
+                }
+              }
+
+              for (const track of mediaTracks) {
+                const type = track['@type'].toLowerCase();
+                const index = (typeIndices[type] ?? -1) + 1;
+                const mkvSet = (type === 'video' ? video : type === 'audio' ? audio : []);
+
+                typeIndices[type] = index;
+
+                if (mkvSet[index]?.properties)
+                  mkvSet[index].properties.media = track;
+              }
+
+              break;
             }
           }
           catch (e) {
@@ -624,7 +674,7 @@ let errorCount = 0;
 
           legacyRips += oldStuff ? 1 : 0;
 
-          if (editArgs.length > 1) {
+          if (editArgs.length > 1 && (!isExtra || UPDATE_EXTRAS_METADATA)) {
             try {
               if (CAN_MODIFY) {
                 await monitorProcess(spawn('mkvpropedit', editArgs), null, ErrorMode.ANY_ERROR);
@@ -680,10 +730,15 @@ let errorCount = 0;
   console.log('Other count:', counts.other);
   console.log('Updated:', updated);
   console.log('Legacy rips:', legacyRips);
+  console.log('Corrupted files: %s, (%s repaired)', corruptFiles.length, corruptFilesRepaired);
   console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
   console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique movie show titles:\n ', Array.from(movieTitles).sort(compareCaseSecondary).join('\n  '));
-  console.log('Errors:', errorCount);
+
+  if (corruptFiles.length > 0)
+    console.log('\nCorrupt files:\n ', corruptFiles.join('\n  '));
+
+  console.log('\nErrors:', errorCount);
 })();
