@@ -1,13 +1,13 @@
-import { existsSync } from 'fs';
-import { lstat, readdir, rename, unlink, utimes } from 'fs/promises';
+import { createReadStream, existsSync } from 'fs';
+import { lstat, open, readdir, rename, unlink, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
-import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber } from '@tubular/util';
+import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, isString, last, toInt, toMixedCase, toNumber } from '@tubular/util';
 import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
 
 const src = (existsSync('V:') ? 'V:' : '/Volumes/video');
-const CAN_MODIFY = false;
+const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
 const SKIP_MOVIES = false;
 const SKIP_TV = false;
@@ -121,6 +121,9 @@ function formatTime(nanos: number): string {
 }
 
 function formatAspectRatio(track: VideoTrackProperties): string {
+  if (!track)
+    return '';
+
   let ratio: number;
 
   if (track.media?.DisplayAspectRatio)
@@ -142,6 +145,9 @@ function formatAspectRatio(track: VideoTrackProperties): string {
 }
 
 function formatResolution(dims: string): string {
+  if (!dims)
+    return '';
+
   const [w, h] = dims.split('x').map(d => toInt(d));
 
   if (w >= 2000 || h >= 1100)
@@ -196,6 +202,9 @@ function getLanguage(props: GeneralTrackProperties): string {
 }
 
 function getCodec(track: GeneralTrack): string {
+  if (!track)
+    return '';
+
   let codec = track.codec || '';
 
   if (codec === 'DTS-HD Master Audio')
@@ -264,13 +273,40 @@ function normalizeTitle(s: string): string {
   return s.replace(/\s+\([^(]*\b(cut|edition|version)\)/i, '');
 }
 
-async function attemptFileRepair(path: string): Promise<boolean> {
-  const backupPath = path.replace(/\.mkv$/i, '.bak.mkv');
-
+async function attemptFileRepair(path: string, badMP3: number): Promise<boolean> {
   try {
-    await rename(path, backupPath);
-    await monitorProcess(spawn('mkvmerge', ['-o', path, backupPath]));
-    await unlink(backupPath);
+    if (badMP3) {
+      const inStream = createReadStream(path, { encoding: 'binary', highWaterMark: 1048576 });
+      let fixed = false;
+      let offset = 0;
+
+      for await (const chunk of inStream) {
+        const index = fixed ? -1 : chunk.indexOf('LAME3.100');
+
+        if (index >= 0) {
+          const fd = await open(path, 'r+');
+
+          await fd.write('\x00'.repeat(badMP3), offset + index + 9, 'binary');
+          await fd.close();
+          fixed = true;
+          break;
+        }
+
+        offset += chunk.length;
+      }
+
+      await new Promise<void>(resolve => inStream.close(() => resolve()));
+
+      return fixed;
+    }
+    else {
+      const backupPath = path.replace(/\.mkv$/i, '.bak.mkv');
+
+      await rename(path, backupPath);
+      await monitorProcess(spawn('mkvmerge', ['-o', path, backupPath]));
+      await monitorProcess(spawn('chmod', ['--reference=' + backupPath, path]));
+      await unlink(backupPath);
+    }
   }
   catch (e) {
     console.error('Error during attempted file repair:', e.message);
@@ -280,14 +316,14 @@ async function attemptFileRepair(path: string): Promise<boolean> {
   return true;
 }
 
-function hasBadMP3(mediaTracks: MediaTrack[]): boolean {
+function hasBadMP3(mediaTracks: MediaTrack[]): number {
   for (const track of mediaTracks) {
-    if (track['@type'] === 'Audio' && track.CodecID === 'A_MPEG/L3' &&
-        track.Encoded_Library?.startsWith('LAME3.100') && track.Encoded_Library !== 'LAME3.100')
-      return true;
+    if (track['@type'] === 'Audio' && track.CodecID === 'A_MPEG/L3' && isString(track.Encoded_Library) &&
+        track.Encoded_Library.startsWith('LAME3.100') && track.Encoded_Library !== 'LAME3.100')
+      return track.Encoded_Library.length - 9;
   }
 
-  return false;
+  return 0;
 }
 
 const audioNames = new Set<string>();
@@ -431,10 +467,15 @@ let errorCount = 0;
               const badMP3 = hasBadMP3(mediaTracks);
 
               if (mediaTracks.length < 2 || badMP3) {
-                corruptFiles.push(path);
+                if (attempt === 1)
+                  corruptFiles.push(path);
 
-                if (attempt === 2 || !CAN_MODIFY) {
-                  console.error('   *** CORRUPTED FILE WAS NOT REPAIRED\n', path);
+                if (!CAN_MODIFY) {
+                  console.error('   *** CORRUPTED FILE WAS NOT REPAIRED: %s\n', path);
+                  continue fileLoop;
+                }
+                else if (attempt === 2) {
+                  console.error('   *** CORRUPTED FILE WAS NOT REPAIRED\n');
                   continue fileLoop;
                 }
                 else {
@@ -442,7 +483,7 @@ let errorCount = 0;
                   console.warn('   *** CORRUPTED: %s', path);
                   console.warn('   *** Attempting repair...');
 
-                  if (await attemptFileRepair(path)) {
+                  if (await attemptFileRepair(path, badMP3)) {
                     ++corruptFilesRepaired;
                     corruptFiles.pop();
                     corruptFiles.push(path + ' (repaired)');
@@ -481,10 +522,10 @@ let errorCount = 0;
           let origDate = (cp.date_utc || cp.date_local) && new Date(cp.date_utc || cp.date_local);
           let suggestedTitle = newTitle || createTitle(title, file);
           const subtitles = mkvInfo.tracks.filter(t => t.type === 'subtitles') as SubtitlesTrack[];
-          const aspect = formatAspectRatio(video[0].properties);
-          const resolution = formatResolution(video[0].properties.pixel_dimensions);
+          const aspect = formatAspectRatio(video[0]?.properties);
+          const resolution = formatResolution(video[0]?.properties?.pixel_dimensions);
           const codec = getCodec(video[0]);
-          const d3 = (video[0].properties.stereo_mode ? ' (3D)' : '');
+          const d3 = (video[0]?.properties.stereo_mode ? ' (3D)' : '');
 
           if (/^HandBrake/.test(app)) {
             const version = (/^HandBrake\s+(\d+\.\d+)/.exec(app) ?? [])[1];
