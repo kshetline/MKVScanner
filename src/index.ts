@@ -275,18 +275,20 @@ function normalizeTitle(s: string): string {
 
 async function attemptFileRepair(path: string, badMP3: number): Promise<boolean> {
   try {
-    if (badMP3) {
+    if (badMP3 < 0)
+      return false;
+    else if (badMP3) {
       const inStream = createReadStream(path, { encoding: 'binary', highWaterMark: 1048576 });
       let fixed = false;
       let offset = 0;
 
       for await (const chunk of inStream) {
-        const index = fixed ? -1 : chunk.indexOf('LAME3.100');
+        const index = fixed ? -1 : chunk.indexOf('LAME3.10');
 
         if (index >= 0) {
           const fd = await open(path, 'r+');
 
-          await fd.write('\x00'.repeat(badMP3), offset + index + 9, 'binary');
+          await fd.write('\x00', offset + index + 8, 'binary');
           await fd.close();
           fixed = true;
           break;
@@ -318,9 +320,14 @@ async function attemptFileRepair(path: string, badMP3: number): Promise<boolean>
 
 function hasBadMP3(mediaTracks: MediaTrack[]): number {
   for (const track of mediaTracks) {
-    if (track['@type'] === 'Audio' && track.CodecID === 'A_MPEG/L3' && isString(track.Encoded_Library) &&
-        track.Encoded_Library.startsWith('LAME3.100') && track.Encoded_Library !== 'LAME3.100')
-      return track.Encoded_Library.length - 9;
+    if (track['@type'] === 'Audio' && track.CodecID === 'A_MPEG/L3') {
+      if (!isString(track.Encoded_Library))
+        return -1;
+      else if (track.Encoded_Library.startsWith('LAME3.10') && track.Encoded_Library !== 'LAME3.10')
+        return track.Encoded_Library.length - 8;
+      else
+        return -1;
+    }
   }
 
   return 0;
