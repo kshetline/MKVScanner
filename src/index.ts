@@ -7,7 +7,7 @@ import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
 
 const src = (existsSync('V:') ? 'V:' : '/Volumes/video');
-const CAN_MODIFY = true;
+const CAN_MODIFY = false;
 const CAN_MODIFY_TIMES = true;
 const SKIP_MOVIES = false;
 const SKIP_TV = false;
@@ -32,6 +32,8 @@ interface MediaTrack {
   ChannelPositions_Original?: string;
   ChannelLayout?: string;
   ChannelLayout_Original?: string;
+  CodecID?: string;
+  Encoded_Library?: string;
   DisplayAspectRatio?: string;
   HDR_Format?: string;
 }
@@ -278,6 +280,16 @@ async function attemptFileRepair(path: string): Promise<boolean> {
   return true;
 }
 
+function hasBadMP3(mediaTracks: MediaTrack[]): boolean {
+  for (const track of mediaTracks) {
+    if (track['@type'] === 'Audio' && track.CodecID === 'A_MPEG/L3' &&
+        track.Encoded_Library?.startsWith('LAME3.100') && track.Encoded_Library !== 'LAME3.100')
+      return true;
+  }
+
+  return false;
+}
+
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
 const movieTitles = new Set<string>();
@@ -416,8 +428,9 @@ let errorCount = 0;
               const mediaJson = (await monitorProcess(spawn('mediainfo', [path, '--Output=JSON'])));
               const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
               const typeIndices = {} as Record<string, number>;
+              const badMP3 = hasBadMP3(mediaTracks);
 
-              if (mediaTracks.length < 2) {
+              if (mediaTracks.length < 2 || badMP3) {
                 corruptFiles.push(path);
 
                 if (attempt === 2 || !CAN_MODIFY) {
