@@ -2,7 +2,9 @@ import { createReadStream, existsSync } from 'fs';
 import { lstat, open, readdir, rename, unlink, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
-import { compareCaseSecondary, compareDottedValues, isAllUppercaseWords, isString, last, toInt, toMixedCase, toNumber } from '@tubular/util';
+import {
+  compareCaseSecondary, compareDottedValues, isAllUppercaseWords, isString, last, toInt, toMixedCase, toNumber
+} from '@tubular/util';
 import { abs, floor, round } from '@tubular/math';
 import { code2Name, lang3to2 } from './lang';
 
@@ -273,9 +275,9 @@ function normalizeTitle(s: string): string {
   return s.replace(/\s+\([^(]*\b(cut|edition|version)\)/i, '');
 }
 
-async function attemptFileRepair(path: string, badMP3: number): Promise<boolean> {
+async function attemptFileRepair(path: string, badMP3: string): Promise<boolean> {
   try {
-    if (badMP3 < 0)
+    if (badMP3 === '')
       return false;
     else if (badMP3) {
       const inStream = createReadStream(path, { encoding: 'binary', highWaterMark: 1048576 });
@@ -283,15 +285,20 @@ async function attemptFileRepair(path: string, badMP3: number): Promise<boolean>
       let offset = 0;
 
       for await (const chunk of inStream) {
-        const index = fixed ? -1 : chunk.indexOf('LAME3.10');
+        if (!fixed) {
+          let index = chunk.indexOf(badMP3);
 
-        if (index >= 0) {
-          const fd = await open(path, 'r+');
+          for (let i = 9; i >= 4 && index < 0; --i)
+            index = chunk.indexOf('LAME3.100'.substring(0, i));
 
-          await fd.write('\x00', offset + index + 8, 'binary');
-          await fd.close();
-          fixed = true;
-          break;
+          if (index >= 0) {
+            const fd = await open(path, 'r+');
+
+            await fd.write('3.100\x00', offset + index + 4, 'binary');
+            await fd.close();
+            fixed = true;
+            break;
+          }
         }
 
         offset += chunk.length;
@@ -318,19 +325,32 @@ async function attemptFileRepair(path: string, badMP3: number): Promise<boolean>
   return true;
 }
 
-function hasBadMP3(mediaTracks: MediaTrack[]): number {
-  for (const track of mediaTracks) {
+async function hasBadMP3(mediaTracks: MediaTrack[], path: string): Promise<string> {
+  let altTracks: string[];
+
+  for (let i = 0; i < mediaTracks.length; ++i) {
+    const track = mediaTracks[i];
+
     if (track['@type'] === 'Audio' && track.CodecID === 'A_MPEG/L3') {
-      if (!isString(track.Encoded_Library))
-        return -1;
-      else if (track.Encoded_Library.startsWith('LAME3.10') && track.Encoded_Library !== 'LAME3.10')
-        return track.Encoded_Library.length - 8;
-      else
-        return -1;
+      if (!isString(track.Encoded_Library)) {
+        if (!altTracks) {
+          altTracks = (await monitorProcess(spawn('mediainfo', [path]))).split(/\r\n\r\n|\n\n/);
+        }
+
+        const wl = (/Writing library\s*:\s*(.*)[\r\n]/i.exec(altTracks[i]) || [])[1];
+
+        if (wl)
+          track.Encoded_Library = wl;
+      }
+
+      if (isString(track.Encoded_Library) && !track.Encoded_Library.startsWith('LAME'))
+        return '';
+      else if (track.Encoded_Library !== 'LAME3.10' && track.Encoded_Library !== 'LAME3.100')
+        return track.Encoded_Library;
     }
   }
 
-  return 0;
+  return null;
 }
 
 const audioNames = new Set<string>();
@@ -339,7 +359,7 @@ const movieTitles = new Set<string>();
 const tvTitles = new Set<string>();
 const tvEpisodes = new Set<string>();
 const corruptFiles = [] as string[];
-let corruptFilesRepaired = 0;
+const repairedCorruptFiles = [] as string[];
 let updated = 0;
 let hasUnnamedSubtitleTracks = 0;
 let legacyRips = 0;
@@ -468,12 +488,12 @@ let errorCount = 0;
 
           try {
             for (let attempt = 1; attempt <= 2; ++attempt) {
-              const mediaJson = (await monitorProcess(spawn('mediainfo', [path, '--Output=JSON'])));
+              const mediaJson = await monitorProcess(spawn('mediainfo', [path, '--Output=JSON']));
               const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
               const typeIndices = {} as Record<string, number>;
-              const badMP3 = hasBadMP3(mediaTracks);
+              const badMP3 = await hasBadMP3(mediaTracks, path);
 
-              if (mediaTracks.length < 2 || badMP3) {
+              if (mediaTracks.length < 2 || badMP3 != null) {
                 if (attempt === 1)
                   corruptFiles.push(path);
 
@@ -491,13 +511,12 @@ let errorCount = 0;
                   console.warn('   *** Attempting repair...');
 
                   if (await attemptFileRepair(path, badMP3)) {
-                    ++corruptFilesRepaired;
                     corruptFiles.pop();
-                    corruptFiles.push(path + ' (repaired)');
+                    repairedCorruptFiles.push(path);
                     continue;
                   }
                   else {
-                    console.error('   *** CORRUPTED FILE COULD NOT BE REPAIRED\n', path);
+                    console.error('   *** CORRUPTED FILE COULD NOT BE REPAIRED: %s\n', path);
                     continue fileLoop;
                   }
                 }
@@ -555,7 +574,9 @@ let errorCount = 0;
           if ((suggestedTitle || title) && isMovie)
             movieTitles.add(normalizeTitle(suggestedTitle || title));
 
-          if (suggestedTitle && suggestedTitle !== title && !/[:?•’]/.test(title))
+          if (isExtra && !UPDATE_EXTRAS_METADATA)
+            suggestedTitle = undefined;
+          else if (suggestedTitle && suggestedTitle !== title && !/[:?•’]/.test(title))
             editArgs.push('--edit', 'info', '--set', 'title=' + suggestedTitle);
           else
             suggestedTitle = undefined;
@@ -791,7 +812,7 @@ let errorCount = 0;
   console.log('Other count:', counts.other);
   console.log('Updated:', updated);
   console.log('Legacy rips:', legacyRips);
-  console.log('Corrupted files: %s, (%s repaired)', corruptFiles.length, corruptFilesRepaired);
+  console.log('Corrupted files: %s, (%s repaired)', corruptFiles.length, repairedCorruptFiles.length);
   console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
   console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
@@ -800,6 +821,9 @@ let errorCount = 0;
 
   if (corruptFiles.length > 0)
     console.log('\nCorrupt files:\n ', corruptFiles.join('\n  '));
+
+  if (repairedCorruptFiles.length > 0)
+    console.log('\nRepaired corrupt files:\n ', repairedCorruptFiles.join('\n  '));
 
   console.log('\nErrors:', errorCount);
 })();
