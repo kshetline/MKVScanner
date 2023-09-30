@@ -5,8 +5,8 @@ import { ErrorMode, monitorProcess, spawn } from './process-util';
 import {
   compareCaseSecondary, compareDottedValues, isAllUppercaseWords, isString, last, toInt, toMixedCase, toNumber
 } from '@tubular/util';
-import { abs, floor, round } from '@tubular/math';
-import { code2Name, lang3to2 } from './lang';
+import { abs, floor, min, round } from '@tubular/math';
+import { code2Name, lang2to3, lang3to2 } from './lang';
 
 const src = (existsSync('V:') ? 'V:' : '/Volumes/video');
 const CAN_MODIFY = true;
@@ -16,6 +16,7 @@ const SKIP_TV = false;
 const SKIP_EXTRAS = false;
 const SHOW_DETAILS = true;
 const UPDATE_EXTRAS_METADATA = false;
+const CREATE_ALTERNATE_AUDIO = true;
 
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
@@ -309,7 +310,7 @@ async function attemptFileRepair(path: string, badMP3: string): Promise<boolean>
       return fixed;
     }
     else {
-      const backupPath = path.replace(/\.mkv$/i, '.bak.mkv');
+      const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
 
       await rename(path, backupPath);
       await monitorProcess(spawn('mkvmerge', ['-o', path, backupPath]));
@@ -353,6 +354,53 @@ async function hasBadMP3(mediaTracks: MediaTrack[], path: string): Promise<strin
   return null;
 }
 
+async function updateAudioTracks(path: string, videoCount: number,
+                                 aacTrack: number | null, aacTrackName: string, lang: string,
+                                 mp3Track: number, mainChannels: number): Promise<void> {
+  let aacFile = '';
+
+  if (aacTrack > 0) {
+    const args = ['-i', path, '-map', '0:1', '-c', 'aac', '-ac', min(mainChannels, 2).toString(),
+                  '-b:a', mainChannels < 2 ? '96k' : '192k'];
+
+    aacFile = path.replace(/\.mkv$/, '[zni].tmp.aac');
+
+    if (mainChannels > 3)
+      args.push('-af', 'aresample=matrix_encoding=dplii');
+
+    args.push('-ar', '44100', aacFile);
+    console.log('    Generating AAC track...');
+    await monitorProcess(spawn('ffmpeg', args));
+  }
+
+  console.log('    Remuxing...');
+
+  const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
+  const args2 = ['-o', path, backupPath];
+
+  if (mp3Track > 0)
+    args2.splice(2, 0, '--atracks', '!' + mp3Track);
+
+  if (aacFile) {
+    let tracks = '';
+
+    for (let i = 0; i < videoCount + aacTrack - (mp3Track > 0 && mp3Track <= aacTrack ? 0 : 1); ++i)
+      tracks += '0:' + i + ',';
+
+    args2.push('--original-flag', '0', '--track-name', '0:' + aacTrackName,
+               '--language', '0:' + (lang2to3[lang] || lang || 'und'),
+               aacFile, '--track-order', tracks + '1:0');
+  }
+
+  await rename(path, backupPath);
+  await monitorProcess(spawn('mkvmerge', args2));
+  await monitorProcess(spawn('chmod', ['--reference=' + backupPath, path]));
+  await unlink(backupPath);
+
+  if (aacFile)
+    await unlink(aacFile);
+}
+
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
 const movieTitles = new Set<string>();
@@ -394,7 +442,7 @@ let errorCount = 0;
         other += counts.other;
         videos += counts.videos;
       }
-      else if (/\.(mkv|mv4|mov)$/i.test(file)) {
+      else if (/\.(mkv|mv4|mov)$/i.test(file) && !/(\[zni]|(\.tmp\.)|(\.bak\.))/.test(file)) {
         let isExtra = false;
         let isMovie = false;
         let isTV = false;
@@ -479,12 +527,17 @@ let errorCount = 0;
 
         try {
           const mkvJson = (await monitorProcess(spawn('mkvmerge', ['-J', path])))
-             // uid values exceed available numeric precision. Turn into strings instead.
+          // uid values exceed available numeric precision. Turn into strings instead.
             .replace(/("uid":\s+)(\d+)/g, '$1"$2"');
           const mkvInfo = JSON.parse(mkvJson) as MKVInfo;
 
           const video = mkvInfo.tracks.filter(t => t.type === 'video') as VideoTrack[];
           const audio = mkvInfo.tracks.filter(t => t.type === 'audio') as AudioTrack[];
+          let aacTrack: number | null = -1;
+          let newAAC = -2;
+          let mp3Track = -1;
+          let mp3Name = '';
+          let mainChannels = 0;
 
           try {
             for (let attempt = 1; attempt <= 2; ++attempt) {
@@ -550,8 +603,10 @@ let errorCount = 0;
           const subtitles = mkvInfo.tracks.filter(t => t.type === 'subtitles') as SubtitlesTrack[];
           const aspect = formatAspectRatio(video[0]?.properties);
           const resolution = formatResolution(video[0]?.properties?.pixel_dimensions);
+          const is4K = (resolution === 'UHD');
           const codec = getCodec(video[0]);
-          const d3 = (video[0]?.properties.stereo_mode ? ' (3D)' : '');
+          const is3D = !!video[0]?.properties.stereo_mode;
+          const d3 = (is3D ? ' (3D)' : '');
 
           if (/^HandBrake/.test(app)) {
             const version = (/^HandBrake\s+(\d+\.\d+)/.exec(app) ?? [])[1];
@@ -590,6 +645,7 @@ let errorCount = 0;
           }
 
           let primaryLang = '';
+          let langCount = 0;
 
           if (audio.length > 0) {
             const defaultTrack = audio.find(t => t.properties.default_track) ?? audio[0];
@@ -603,7 +659,7 @@ let errorCount = 0;
             for (const track of subtitles)
               languages.add(getLanguage(track.properties));
 
-            const langCount = languages.size;
+            langCount = languages.size;
 
             for (let i = 1; i <= audio.length; ++i) {
               const track = audio[i - 1];
@@ -613,10 +669,14 @@ let errorCount = 0;
               let name = tp.track_name || '';
               const pl2 = /dolby pl2/i.test(name);
               const codec = getCodec(track);
-              const channels = (tp.audio_channels === 2 && pl2) ? 'Dolby PL2' : channelString(tp);
+              const cCount = tp.audio_channels;
+              const channels = (cCount === 2 && pl2) ? 'Dolby PL2' : channelString(tp);
               let da = /\bda(\s+([0-9.]+|stereo|mono))?$/i.test(name);
               let newName = '';
               let audioDescr = `:${codec}: ${channels}`;
+
+              if (newAAC < 0 && i > 1 && (cCount <= 2 || lang !== primaryLang))
+                newAAC = i;
 
               if (!da && tp.flag_visual_impaired)
                 da = true;
@@ -630,7 +690,7 @@ let errorCount = 0;
                 newName = $[1].trim();
 
               if (da && language)
-                newName = `${language} DA${tp.audio_channels !== 2 ? ' ' + channels : ''}`;
+                newName = `${language} DA${cCount !== 2 ? ' ' + channels : ''}`;
               else if (name && /instrumental|music|score|original/i.test(name)) {
                 if (!/\(|\b([0-9.]+|stereo|mono)\b/i.test(name)) {
                   if (codec === 'AC-3')
@@ -683,6 +743,16 @@ let errorCount = 0;
               audioNames.add(lang + ':' + (name || ''));
               audioDescr = ((name || '(unnamed)') + (audioDescr !== name ? ` [${audioDescr}]` : '')).trim();
 
+              if (i === 1)
+                mainChannels = cCount;
+
+              if (codec === 'AAC' && cCount <= 2)
+                aacTrack = i;
+              else if (codec === 'MP3') {
+                mp3Track = i;
+                mp3Name = name;
+              }
+
               if (SHOW_DETAILS)
                 console.log(`         ${i < 10 ? ' ' : ''}Audio ${i}: ${audioDescr}` +
                   (track === defaultTrack ? ' (primary audio)' : '') + trackFlags(tp));
@@ -693,7 +763,7 @@ let errorCount = 0;
 
           if (subtitles.length > 0) {
             const defaultTrack = subtitles.find(t => t.properties.default_track) ??
-                    subtitles.find(t => t.properties.forced_track);
+              subtitles.find(t => t.properties.forced_track);
 
             let hasUnnamed = 0;
 
@@ -776,6 +846,33 @@ let errorCount = 0;
               ++errorCount;
               console.error('    *** UPDATE FAILED: ' + e.message);
             }
+          }
+
+          if (mainChannels > 0) {
+            let aacTrackName: string;
+
+            aacTrack = (is3D || is4K ? (aacTrack < 0 ? null : -aacTrack) : (aacTrack < 0 ? abs(newAAC) : null));
+
+            if (mp3Track >= 0)
+              console.log('    Will remove MP3 track');
+
+            if (aacTrack < 0)
+              console.log('    Will remove unneeded AAC track');
+            else if (aacTrack > 0) {
+              if (mp3Name)
+                aacTrackName = mp3Name.replace(/\bMP3\b/g, 'AAC');
+              else {
+                aacTrackName = (mainChannels > 3 ? 'Dolby PL2' : mainChannels > 1 ? 'AAC Stereo' : 'AAC Mono');
+
+                if (primaryLang && langCount > 1)
+                  aacTrackName = (code2Name[primaryLang] || primaryLang) + ' ' + aacTrackName;
+              }
+
+              console.log('    Will add new AAC track:', aacTrackName);
+            }
+
+            if (CAN_MODIFY && CREATE_ALTERNATE_AUDIO && (aacTrack != null || mp3Track >= 0))
+              await updateAudioTracks(path, video.length, aacTrack, aacTrackName, primaryLang, mp3Track, mainChannels);
           }
 
           if (CAN_MODIFY && newFileName && file !== newFileName) {

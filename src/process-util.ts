@@ -1,6 +1,6 @@
 import { ChildProcess, execSync, spawn as nodeSpawn } from 'child_process';
 import * as readline from 'readline';
-import { asLines, isNumber } from '@tubular/util';
+import { asLines, isNumber, regex } from '@tubular/util';
 
 const isMacOS = (process.platform === 'darwin');
 const isWindows = (process.platform === 'win32');
@@ -43,7 +43,9 @@ export function stripFormatting(s: string): string {
 function errorish(s: string): boolean {
   s = stripFormatting(s);
 
-  return /\b(failed|exception|invalid|operation not permitted|isn't a valid|Cannot resolve|must be specified|must implement|need to install|doesn't exist|are required|should be strings?)\b/i.test(s) ||
+  return regex`\b(failed|exception|invalid|operation not permitted|not a valid|
+                  isn't a valid|Cannot resolve|must be specified|must implement|
+                  need to install|doesn't exist|are required|should be strings?)\b${'i'}`.test(s) ||
          /[_\da-z](Error|Exception|Invalid)\b/.test(s) || /\[ERR_|code: 'ERR/.test(s);
 }
 
