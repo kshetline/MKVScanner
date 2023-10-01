@@ -376,7 +376,8 @@ async function updateAudioTracks(path: string, videoCount: number,
   console.log('    Remuxing...');
 
   const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
-  const args2 = ['-o', path, backupPath];
+  const updatePath = path.replace(/\.mkv$/i, '[zni].upd.mkv');
+  const args2 = ['-o', updatePath, backupPath];
 
   if (mp3Track > 0)
     args2.splice(2, 0, '--atracks', '!' + mp3Track);
@@ -394,7 +395,8 @@ async function updateAudioTracks(path: string, videoCount: number,
 
   await rename(path, backupPath);
   await monitorProcess(spawn('mkvmerge', args2));
-  await monitorProcess(spawn('chmod', ['--reference=' + backupPath, path]));
+  await monitorProcess(spawn('chmod', ['--reference=' + backupPath, updatePath]));
+  await rename(updatePath, path);
   await unlink(backupPath);
 
   if (aacFile)
