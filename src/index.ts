@@ -397,6 +397,14 @@ async function updateAudioTracks(path: string, videoCount: number,
   await monitorProcess(spawn('mkvmerge', args2));
   await monitorProcess(spawn('chmod', ['--reference=' + backupPath, updatePath]));
   await rename(updatePath, path);
+
+  if (CAN_MODIFY_TIMES) {
+    const stat = await lstat(backupPath);
+    const newTime = new Date(stat.mtime.getTime() + 60000);
+
+    await utimes(path, newTime, newTime);
+  }
+
   await unlink(backupPath);
 
   if (aacFile)
@@ -411,6 +419,7 @@ const tvEpisodes = new Set<string>();
 const corruptFiles = [] as string[];
 const repairedCorruptFiles = [] as string[];
 let updated = 0;
+let updatedAudio = 0;
 let hasUnnamedSubtitleTracks = 0;
 let legacyRips = 0;
 let extras = 0;
@@ -825,6 +834,7 @@ let errorCount = 0;
           }
 
           const oldStuff = origDate && origDate.getTime() < NEW_STUFF.getTime();
+          let wasUpdated = false;
 
           legacyRips += oldStuff ? 1 : 0;
 
@@ -839,7 +849,7 @@ let errorCount = 0;
                 console.log('    *** Update succeeded');
               }
 
-              ++updated;
+              wasUpdated = true;
 
               if (SHOW_DETAILS)
                 console.log('    *** Update: ', editArgs.splice(1).map(s => escapeArg(s)).join(' '));
@@ -873,8 +883,11 @@ let errorCount = 0;
               console.log('    Will add new AAC track:', aacTrackName);
             }
 
-            if (CAN_MODIFY && CREATE_ALTERNATE_AUDIO && (aacTrack != null || mp3Track >= 0))
+            if (CAN_MODIFY && CREATE_ALTERNATE_AUDIO && (aacTrack != null || mp3Track >= 0)) {
               await updateAudioTracks(path, video.length, aacTrack, aacTrackName, primaryLang, mp3Track, mainChannels);
+              wasUpdated = true;
+              ++updatedAudio;
+            }
           }
 
           if (CAN_MODIFY && newFileName && file !== newFileName) {
@@ -887,6 +900,7 @@ let errorCount = 0;
             }
           }
 
+          updated += (wasUpdated ? 1 : 0);
           console.log();
         }
         catch (e) {
@@ -910,6 +924,7 @@ let errorCount = 0;
   console.log(`Movies: ${(movieStorage / 1E9).toFixed(2)}GB, TV: ${(tvStorage / 1E9).toFixed(2)}GB, Extras: ${(extrasStorage / 1E9).toFixed(2)}GB`);
   console.log('Other count:', counts.other);
   console.log('Updated:', updated);
+  console.log('Updated audio:', updatedAudio);
   console.log('Legacy rips:', legacyRips);
   console.log('Corrupted files: %s, (%s repaired)', corruptFiles.length, repairedCorruptFiles.length);
   console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
