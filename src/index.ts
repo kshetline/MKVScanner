@@ -377,7 +377,7 @@ async function updateAudioTracks(path: string, videoCount: number,
 
   const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
   const updatePath = path.replace(/\.mkv$/i, '[zni].upd.mkv');
-  const args2 = ['-o', updatePath, backupPath];
+  const args2 = ['-o', updatePath, path];
 
   if (mp3Track > 0)
     args2.splice(2, 0, '--atracks', '!' + mp3Track);
@@ -393,9 +393,9 @@ async function updateAudioTracks(path: string, videoCount: number,
                aacFile, '--track-order', tracks + '1:0');
   }
 
-  await rename(path, backupPath);
   await monitorProcess(spawn('mkvmerge', args2));
-  await monitorProcess(spawn('chmod', ['--reference=' + backupPath, updatePath]));
+  await monitorProcess(spawn('chmod', ['--reference=' + path, updatePath]));
+  await rename(path, backupPath);
   await rename(updatePath, path);
 
   if (CAN_MODIFY_TIMES) {
