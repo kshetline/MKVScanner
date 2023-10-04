@@ -43,7 +43,7 @@ export function stripFormatting(s: string): string {
 function errorish(s: string): boolean {
   s = stripFormatting(s);
 
-  return regex`\b(failed|exception|invalid|operation not permitted|not a valid|
+  return regex`\b(failed|exception|operation not permitted|not a valid|
                   isn't a valid|Cannot resolve|must be specified|must implement|
                   need to install|doesn't exist|are required|should be strings?)\b${'i'}`.test(s) ||
          /[_\da-z](Error|Exception|Invalid)\b/.test(s) || /\[ERR_|code: 'ERR/.test(s);

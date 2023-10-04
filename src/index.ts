@@ -717,7 +717,7 @@ let errorCount = 0;
                   newName = audioDescr.replace(/:[^:]*: /g, '');
               }
 
-              newName = newName.replace('MP3 Dolby', 'Dolby').replace(/\s+AC-3\b/, '');
+              newName = newName.replace(/(AAC|MP3) Dolby/, 'Dolby').replace(/\s+AC-3\b/, '');
               audioDescr = audioDescr.replace(/:/g, '');
 
               if (!name && !newName)
