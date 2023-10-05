@@ -276,6 +276,32 @@ function normalizeTitle(s: string): string {
   return s.replace(/\s+\([^(]*\b(cut|edition|version)\)/i, '');
 }
 
+async function safeUnlink(path: string): Promise<boolean> {
+  try {
+    await unlink(path);
+    return true;
+  }
+  catch (e) {
+    if (e.code !== 'ENOENT')
+      throw e;
+  }
+
+  return false;
+}
+
+async function existsAsync(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  }
+  catch (e) {
+    if (e.code !== 'ENOENT')
+      throw e;
+  }
+
+  return false;
+}
+
 async function attemptFileRepair(path: string, badMP3: string): Promise<boolean> {
   try {
     if (badMP3 === '')
@@ -370,6 +396,7 @@ async function updateAudioTracks(path: string, videoCount: number,
 
     args.push('-ar', '44100', aacFile);
     console.log('    Generating AAC track...');
+    await safeUnlink(aacFile);
     await monitorProcess(spawn('ffmpeg', args));
   }
 
@@ -393,6 +420,7 @@ async function updateAudioTracks(path: string, videoCount: number,
                aacFile, '--track-order', tracks + '1:0');
   }
 
+  await safeUnlink(updatePath);
   await monitorProcess(spawn('mkvmerge', args2));
   await monitorProcess(spawn('chmod', ['--reference=' + path, updatePath]));
   await rename(path, backupPath);
@@ -408,7 +436,7 @@ async function updateAudioTracks(path: string, videoCount: number,
   await unlink(backupPath);
 
   if (aacFile)
-    await unlink(aacFile);
+    await safeUnlink(aacFile);
 }
 
 const audioNames = new Set<string>();
@@ -437,11 +465,11 @@ let errorCount = 0;
     let other = 0;
 
     fileLoop:
-    for (const file of files) {
-      const path = pathJoin(dir, file);
+    for (let file of files) {
+      let path = pathJoin(dir, file);
       const stat = await lstat(path);
 
-      if (file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
+      if (!await existsAsync(path) || file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
         // Do nothing
       }
       else if (stat.isDirectory()) {
@@ -454,6 +482,32 @@ let errorCount = 0;
         videos += counts.videos;
       }
       else if (/\.(mkv|mv4|mov)$/i.test(file) && !/(\[zni]|(\.tmp\.)|(\.bak\.))/.test(file)) {
+        ++videos;
+        console.log('file:', file);
+
+        if (file.endsWith('.upd.mkv')) {
+          const baseFile = file.replace(/(\[[^]]*])?\.upd\.mkv$/, '.mkv');
+
+          if (!await existsAsync(baseFile)) {
+            const newPath = pathJoin(dir, baseFile);
+
+            await rename(path, newPath);
+            path = newPath;
+            file = baseFile;
+            console.log('    *** Recovering original file from update file');
+          }
+          else {
+            await safeUnlink(path);
+            console.log('    *** Deleting leftover work file');
+            continue;
+          }
+        }
+
+        if (!file.endsWith('.mkv')) {
+          console.log('    *** NOT MKV - skipping ***\n');
+          continue;
+        }
+
         let isExtra = false;
         let isMovie = false;
         let isTV = false;
@@ -476,14 +530,6 @@ let errorCount = 0;
 
         if (isMovie && SKIP_MOVIES || isTV && SKIP_TV || isExtra && SKIP_EXTRAS)
           continue;
-
-        ++videos;
-        console.log('file:', file);
-
-        if (!file.endsWith('.mkv')) {
-          console.log('    *** NOT MKV - skipping ***\n');
-          continue;
-        }
 
         let newFileName = '';
         let newTitle = '';
