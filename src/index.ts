@@ -1,5 +1,5 @@
-import { createReadStream, existsSync } from 'fs';
-import { lstat, open, readdir, rename, unlink, utimes } from 'fs/promises';
+import { createReadStream, existsSync, Stats } from 'fs';
+import { lstat, mkdtemp, open, readdir, rename, unlink, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
 import {
@@ -7,6 +7,7 @@ import {
 } from '@tubular/util';
 import { abs, floor, min, round } from '@tubular/math';
 import { code2Name, lang2to3, lang3to2 } from './lang';
+import * as os from 'os';
 
 const src = (existsSync('V:') ? 'V:' : '/Volumes/video');
 const CAN_MODIFY = true;
@@ -289,6 +290,18 @@ async function safeUnlink(path: string): Promise<boolean> {
   return false;
 }
 
+async function safeLstat(path: string): Promise<Stats | null> {
+  try {
+    return await lstat(path);
+  }
+  catch (e) {
+    if (e.code !== 'ENOENT')
+      throw e;
+  }
+
+  return null;
+}
+
 async function existsAsync(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -383,60 +396,65 @@ async function hasBadMP3(mediaTracks: MediaTrack[], path: string): Promise<strin
 async function updateAudioTracks(path: string, videoCount: number,
                                  aacTrack: number | null, aacTrackName: string, lang: string,
                                  mp3Track: number, mainChannels: number): Promise<void> {
-  let aacFile = '';
+  try {
+    let aacFile = '';
 
-  if (aacTrack > 0) {
-    const args = ['-i', path, '-map', '0:1', '-c', 'aac', '-ac', min(mainChannels, 2).toString(),
-                  '-b:a', mainChannels < 2 ? '96k' : '192k'];
+    if (aacTrack > 0) {
+      const args = ['-i', path, '-map', '0:1', '-c', 'aac', '-ac', min(mainChannels, 2).toString(),
+                    '-b:a', mainChannels < 2 ? '96k' : '192k'];
 
-    aacFile = path.replace(/\.mkv$/, '[zni].tmp.aac');
+      aacFile = pathJoin(os.tmpdir(), await mkdtemp('tmp-') + '.tmp.aac');
 
-    if (mainChannels > 3)
-      args.push('-af', 'aresample=matrix_encoding=dplii');
+      if (mainChannels > 3)
+        args.push('-af', 'aresample=matrix_encoding=dplii');
 
-    args.push('-ar', '44100', aacFile);
-    console.log('    Generating AAC track...');
-    await safeUnlink(aacFile);
-    await monitorProcess(spawn('ffmpeg', args));
+      args.push('-ar', '44100', aacFile);
+      console.log('    Generating AAC track...');
+      await safeUnlink(aacFile);
+      await monitorProcess(spawn('ffmpeg', args));
+    }
+
+    console.log('    Remuxing...');
+
+    const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
+    const updatePath = path.replace(/\.mkv$/i, '[zni].upd.mkv');
+    const args2 = ['-o', updatePath, path];
+
+    if (mp3Track > 0)
+      args2.splice(2, 0, '--atracks', '!' + mp3Track);
+
+    if (aacFile) {
+      let tracks = '';
+
+      for (let i = 0; i < videoCount + aacTrack - (mp3Track > 0 && mp3Track <= aacTrack ? 0 : 1); ++i)
+        tracks += '0:' + i + ',';
+
+      args2.push('--original-flag', '0', '--track-name', '0:' + aacTrackName,
+        '--language', '0:' + (lang2to3[lang] || lang || 'und'),
+        aacFile, '--track-order', tracks + '1:0');
+    }
+
+    await safeUnlink(updatePath);
+    await monitorProcess(spawn('mkvmerge', args2));
+    await monitorProcess(spawn('chmod', ['--reference=' + path, updatePath]));
+    await rename(path, backupPath);
+    await rename(updatePath, path);
+
+    if (CAN_MODIFY_TIMES) {
+      const stat = await lstat(backupPath);
+      const newTime = new Date(stat.mtime.getTime() + 60000);
+
+      await utimes(path, newTime, newTime);
+    }
+
+    await unlink(backupPath);
+
+    if (aacFile)
+      await safeUnlink(aacFile);
   }
-
-  console.log('    Remuxing...');
-
-  const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
-  const updatePath = path.replace(/\.mkv$/i, '[zni].upd.mkv');
-  const args2 = ['-o', updatePath, path];
-
-  if (mp3Track > 0)
-    args2.splice(2, 0, '--atracks', '!' + mp3Track);
-
-  if (aacFile) {
-    let tracks = '';
-
-    for (let i = 0; i < videoCount + aacTrack - (mp3Track > 0 && mp3Track <= aacTrack ? 0 : 1); ++i)
-      tracks += '0:' + i + ',';
-
-    args2.push('--original-flag', '0', '--track-name', '0:' + aacTrackName,
-               '--language', '0:' + (lang2to3[lang] || lang || 'und'),
-               aacFile, '--track-order', tracks + '1:0');
+  catch (e) {
+    console.error(e);
   }
-
-  await safeUnlink(updatePath);
-  await monitorProcess(spawn('mkvmerge', args2));
-  await monitorProcess(spawn('chmod', ['--reference=' + path, updatePath]));
-  await rename(path, backupPath);
-  await rename(updatePath, path);
-
-  if (CAN_MODIFY_TIMES) {
-    const stat = await lstat(backupPath);
-    const newTime = new Date(stat.mtime.getTime() + 60000);
-
-    await utimes(path, newTime, newTime);
-  }
-
-  await unlink(backupPath);
-
-  if (aacFile)
-    await safeUnlink(aacFile);
 }
 
 const audioNames = new Set<string>();
@@ -467,9 +485,9 @@ let errorCount = 0;
     fileLoop:
     for (let file of files) {
       let path = pathJoin(dir, file);
-      const stat = await lstat(path);
+      const stat = await safeLstat(path);
 
-      if (!await existsAsync(path) || file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
+      if (!stat || file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
         // Do nothing
       }
       else if (stat.isDirectory()) {
@@ -724,7 +742,7 @@ let errorCount = 0;
               const lang = getLanguage(tp);
               const language = code2Name[lang];
               let name = tp.track_name || '';
-              const pl2 = /dolby pl2/i.test(name);
+              const pl2 = /dolby pl(2|ii)/i.test(name);
               const codec = getCodec(track);
               const cCount = tp.audio_channels;
               const channels = (cCount === 2 && pl2) ? 'Dolby PL2' : channelString(tp);
@@ -763,7 +781,7 @@ let errorCount = 0;
                   newName = audioDescr.replace(/:[^:]*: /g, '');
               }
 
-              newName = newName.replace(/(AAC|MP3) Dolby/, 'Dolby').replace(/\s+AC-3\b/, '');
+              newName = newName.replace(/(AAC|MP3) (?=Dolby PL(2|ii))/i, '').replace(/\s+AC-3\b/, '');
               audioDescr = audioDescr.replace(/:/g, '');
 
               if (!name && !newName)
@@ -803,7 +821,7 @@ let errorCount = 0;
               if (i === 1)
                 mainChannels = cCount;
 
-              if (codec === 'AAC' && cCount <= 2)
+              if (codec === 'AAC' && cCount <= 2 && lang === primaryLang && !/commentary/i.test(name))
                 aacTrack = i;
               else if (codec === 'MP3') {
                 mp3Track = i;
@@ -906,7 +924,7 @@ let errorCount = 0;
             }
           }
 
-          if (mainChannels > 0) {
+          if (mainChannels > 0 && !/Original Special Effects/i.test(path)) {
             let aacTrackName: string;
 
             aacTrack = (is3D || is4K ? (aacTrack < 0 ? null : -aacTrack) : (aacTrack < 0 ? abs(newAAC) : null));
