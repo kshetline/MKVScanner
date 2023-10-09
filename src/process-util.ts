@@ -1,20 +1,7 @@
-import { ChildProcess, execSync, spawn as nodeSpawn } from 'child_process';
-import * as readline from 'readline';
-import { asLines, isNumber, regex } from '@tubular/util';
+import { ChildProcess, spawn as nodeSpawn } from 'child_process';
+import { isFunction, isNumber, isObject, regex } from '@tubular/util';
 
-const isMacOS = (process.platform === 'darwin');
 const isWindows = (process.platform === 'win32');
-const sudoUser = process.env.SUDO_USER || process.env.USER || 'pi';
-let userHome = '/home/pi';
-
-try {
-  userHome = (isMacOS ? process.env.HOME :
-    (isWindows ? process.env.USERPROFILE : execSync(`grep ${sudoUser} /etc/passwd`).toString()
-      .split(':')[5] || userHome));
-}
-catch (err) {
-  console.error(err);
-}
 
 function unref(timer: any): any {
   if (timer?.unref)
@@ -23,15 +10,14 @@ function unref(timer: any): any {
   return timer;
 }
 
-export function getUserHome(): string {
-  return userHome;
-}
+export enum ErrorMode { DEFAULT, FAIL_ON_ANY_ERROR, IGNORE_ERRORS }
+export type ErrorCheck = (s: string) => boolean;
 
-export function getSudoUser(): string {
-  return sudoUser;
+export class ProcessError extends Error {
+  constructor(msg: string, public code: number, public output: string) {
+    super(msg);
+  }
 }
-
-export enum ErrorMode { DEFAULT, ANY_ERROR, NO_ERRORS }
 
 const MAX_MARK_TIME_DELAY = 100;
 const NO_OP = (): void => {};
@@ -73,11 +59,6 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
       options.env = {};
       Object.assign(options.env, process.env);
     }
-
-    options.env.HOME = userHome;
-    options.env.LOGNAME = sudoUser;
-    options.env.npm_config_cache = userHome + '/.npm';
-    options.env.USER = sudoUser;
   }
 
   if (isWindows) {
@@ -107,72 +88,58 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
     return nodeSpawn(command, args, options);
 }
 
-export function monitorProcess(proc: ChildProcess, markTime: () => void = undefined, errorMode = ErrorMode.DEFAULT): Promise<string> {
+export function monitorProcess(proc: ChildProcess, markTime: () => void = undefined,
+                               errorMode: ErrorMode | RegExp | ErrorCheck = ErrorMode.DEFAULT): Promise<string> {
   let errors = '';
   let output = '';
 
   return new Promise<string>((resolve, reject) => {
     const slowSpin = unref(setInterval(markTime || NO_OP, MAX_MARK_TIME_DELAY));
 
+    const looksLikeAnError = (s: string): boolean => {
+      if (isObject(errorMode))
+        return (errorMode as RegExp).test(s);
+      else if (isFunction(errorMode))
+        return (errorMode as unknown as ErrorCheck)(s);
+      else if (errorMode === ErrorMode.IGNORE_ERRORS)
+        return false;
+      else
+        return errorish(s);
+    };
+
     proc.stderr.on('data', data => {
       (markTime || NO_OP)();
       data = stripFormatting(data.toString());
 
-      // This gets confusing, because a lot of non-error progress messaging goes to stderr, and the
-      //   webpack process doesn't exit with an error for compilation errors unless you make it do so.
+      // If process is webpack, error checking gets confusing because a lot of non-error progress messaging goes to
+      // stderr, and the webpack process doesn't exit with an error for compilation errors unless you make it do so.
       if (/(\[webpack.Progress])|Warning\b/.test(data))
         return;
 
-      errors += data;
+      if (errorMode === ErrorMode.FAIL_ON_ANY_ERROR || looksLikeAnError(data))
+        errors += data;
     });
     proc.stdout.on('data', data => {
       (markTime || NO_OP)();
       data = data.toString();
       output += data;
 
-      if (errorish(data))
+      if (looksLikeAnError(data))
         errors = errors ? errors + '\n' + data : data;
     });
     proc.on('error', err => {
-      clearInterval(slowSpin);
-
-      if (errorMode === ErrorMode.NO_ERRORS)
+      if (errorMode === ErrorMode.IGNORE_ERRORS)
         resolve(output);
       else
         reject(err);
     });
-    proc.on('close', () => {
+    proc.on('exit', code => {
       clearInterval(slowSpin);
 
-      if (errorMode !== ErrorMode.NO_ERRORS && errors && (errorMode === ErrorMode.ANY_ERROR || errorish(errors)))
-        reject(errors.replace(/\bE:\s+/g, '').trim());
-      else
+      if (code === 0 || errorMode === ErrorMode.IGNORE_ERRORS || !errors)
         resolve(output);
+      else
+        reject(new ProcessError(errors || code.toString(), code, output));
     });
-  });
-}
-
-export async function monitorProcessLines(proc: ChildProcess, markTime: () => void = undefined, errorMode = ErrorMode.DEFAULT): Promise<string[]> {
-  return asLines(await monitorProcess(proc, markTime, errorMode));
-}
-
-export function sleep(delay: number, markTime: () => void = undefined, stopOnKeypress = false): Promise<boolean> {
-  return new Promise<boolean>(resolve => {
-    const slowSpin = setInterval(markTime || NO_OP, MAX_MARK_TIME_DELAY);
-    const timeout = setTimeout(() => {
-      clearInterval(slowSpin);
-      resolve(false);
-    }, delay);
-
-    if (stopOnKeypress) {
-      readline.emitKeypressEvents(process.stdin);
-      process.stdin.setRawMode(true);
-
-      process.stdin.on('keypress', () => {
-        clearInterval(slowSpin);
-        clearTimeout(timeout);
-        resolve(true);
-      });
-    }
   });
 }

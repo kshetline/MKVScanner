@@ -905,7 +905,7 @@ let errorCount = 0;
           if (editArgs.length > 1 && (!isExtra || UPDATE_EXTRAS_METADATA)) {
             try {
               if (CAN_MODIFY) {
-                await monitorProcess(spawn('mkvpropedit', editArgs), null, ErrorMode.ANY_ERROR);
+                await monitorProcess(spawn('mkvpropedit', editArgs), null, ErrorMode.FAIL_ON_ANY_ERROR);
 
                 if (oldStuff && CAN_MODIFY_TIMES)
                   await utimes(path, stat.atime, new Date(origDate.getTime() + 60000));
