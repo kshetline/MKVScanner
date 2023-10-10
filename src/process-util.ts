@@ -88,8 +88,9 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
     return nodeSpawn(command, args, options);
 }
 
-export function monitorProcess(proc: ChildProcess, markTime: () => void = undefined,
-                               errorMode: ErrorMode | RegExp | ErrorCheck = ErrorMode.DEFAULT): Promise<string> {
+export function monitorProcess(proc: ChildProcess, markTime: (data?: string, stream?: number) => void = undefined,
+                               errorMode: ErrorMode | RegExp | ErrorCheck = ErrorMode.DEFAULT,
+                               outputLimit = 0): Promise<string> {
   let errors = '';
   let output = '';
 
@@ -108,7 +109,7 @@ export function monitorProcess(proc: ChildProcess, markTime: () => void = undefi
     };
 
     proc.stderr.on('data', data => {
-      (markTime || NO_OP)();
+      (markTime || NO_OP)(data?.toString() || '', 1);
       data = stripFormatting(data.toString());
 
       // If process is webpack, error checking gets confusing because a lot of non-error progress messaging goes to
@@ -116,16 +117,27 @@ export function monitorProcess(proc: ChildProcess, markTime: () => void = undefi
       if (/(\[webpack.Progress])|Warning\b/.test(data))
         return;
 
-      if (errorMode === ErrorMode.FAIL_ON_ANY_ERROR || looksLikeAnError(data))
+      if (errorMode === ErrorMode.FAIL_ON_ANY_ERROR || looksLikeAnError(data)) {
         errors += data;
+
+        if (outputLimit > 0 && errors.length > outputLimit)
+          errors = errors.slice(-outputLimit);
+      }
     });
     proc.stdout.on('data', data => {
-      (markTime || NO_OP)();
+      (markTime || NO_OP)(data?.toString() || '', 0);
       data = data.toString();
       output += data;
 
-      if (looksLikeAnError(data))
+      if (outputLimit > 0 && output.length > outputLimit)
+        output = output.slice(-outputLimit);
+
+      if (looksLikeAnError(data)) {
         errors = errors ? errors + '\n' + data : data;
+
+        if (outputLimit > 0 && errors.length > outputLimit)
+          errors = errors.slice(-outputLimit);
+      }
     });
     proc.on('error', err => {
       if (errorMode === ErrorMode.IGNORE_ERRORS)

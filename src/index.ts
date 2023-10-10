@@ -402,6 +402,32 @@ async function updateAudioTracks(path: string, videoCount: number,
     if (aacTrack > 0) {
       const args = ['-i', path, '-map', '0:1', '-c', 'aac', '-ac', min(mainChannels, 2).toString(),
                     '-b:a', mainChannels < 2 ? '96k' : '192k'];
+      let duration = -1;
+      let lastPercent = -1;
+      let percentStr = '';
+      const aacProgress = (data: string, stream: number): void => {
+        if (stream === 1) {
+          let $: RegExpExecArray;
+
+          if (duration < 1 && ($ = /\bDURATION\b\s*:\s*(\d\d):(\d\d):(\d\d)/.exec(data)))
+            duration = toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3]);
+
+          if (duration > 0 && ($ = /.*\btime=(\d\d):(\d\d):(\d\d)/.exec(data))) {
+            const elapsed = toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3]);
+            const percent = round(elapsed * 100 / duration);
+
+            if (lastPercent !== percent) {
+              lastPercent = percent;
+
+              if (percentStr)
+                process.stdout.write('%\x1B[' + (percentStr.length + 1) + 'D');
+
+              percentStr = percent + '%';
+              process.stdout.write(percentStr + '\x1B[K');
+            }
+          }
+        }
+      };
 
       aacFile = pathJoin(os.tmpdir(), await mkdtemp('tmp-') + '.tmp.aac');
 
@@ -409,12 +435,13 @@ async function updateAudioTracks(path: string, videoCount: number,
         args.push('-af', 'aresample=matrix_encoding=dplii');
 
       args.push('-ar', '44100', aacFile);
-      console.log('    Generating AAC track...');
+      process.stdout.write('    Generating AAC track... ');
       await safeUnlink(aacFile);
-      await monitorProcess(spawn('ffmpeg', args));
+      await monitorProcess(spawn('ffmpeg', args), aacProgress, ErrorMode.DEFAULT, 4096);
+      console.log();
     }
 
-    console.log('    Remuxing...');
+    process.stdout.write('    Remuxing... ');
 
     const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
     const updatePath = path.replace(/\.mkv$/i, '[zni].upd.mkv');
@@ -434,8 +461,22 @@ async function updateAudioTracks(path: string, videoCount: number,
         aacFile, '--track-order', tracks + '1:0');
     }
 
+    let percentStr = '';
+    const mergeProgress = (data: string, stream: number): void => {
+      let $: RegExpExecArray;
+
+      if (stream === 0 && ($ = /\bProgress: (\d{1,3}%)/.exec(data)) && percentStr !== $[1]) {
+        if (percentStr)
+          process.stdout.write('%\x1B[' + (percentStr.length + 1) + 'D');
+
+        percentStr = $[1];
+        process.stdout.write(percentStr + '\x1B[K');
+      }
+    };
+
     await safeUnlink(updatePath);
-    await monitorProcess(spawn('mkvmerge', args2));
+    await monitorProcess(spawn('mkvmerge', args2), mergeProgress, ErrorMode.DEFAULT, 4096);
+    console.log();
     await monitorProcess(spawn('chmod', ['--reference=' + path, updatePath]));
     await rename(path, backupPath);
     await rename(updatePath, path);
@@ -501,7 +542,7 @@ let errorCount = 0;
       }
       else if (/\.(mkv|mv4|mov)$/i.test(file) && !/(\[zni]|(\.tmp\.)|(\.bak\.))/.test(file)) {
         ++videos;
-        console.log('file:', file);
+        console.log('file: %s (%s)', file, dir);
 
         if (file.endsWith('.upd.mkv')) {
           const baseFile = file.replace(/(\[[^]]*])?\.upd\.mkv$/, '.mkv');
