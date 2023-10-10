@@ -425,8 +425,6 @@ const subtitlesNames = new Set<string>();
 const movieTitles = new Set<string>();
 const tvTitles = new Set<string>();
 const tvEpisodes = new Set<string>();
-const corruptFiles = [] as string[];
-const repairedCorruptFiles = [] as string[];
 let updated = 0;
 let updatedAudio = 0;
 let hasUnnamedSubtitleTracks = 0;
@@ -912,18 +910,11 @@ let errorCount = 0;
   console.log('Updated:', updated);
   console.log('Updated audio:', updatedAudio);
   console.log('Legacy rips:', legacyRips);
-  console.log('Corrupted files: %s, (%s repaired)', corruptFiles.length, repairedCorruptFiles.length);
   console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
   console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(compareCaseSecondary).join('\n  '));
   console.log('\nUnique movie show titles:\n ', Array.from(movieTitles).sort(compareCaseSecondary).join('\n  '));
-
-  if (corruptFiles.length > 0)
-    console.log('\nCorrupt files:\n ', corruptFiles.join('\n  '));
-
-  if (repairedCorruptFiles.length > 0)
-    console.log('\nRepaired corrupt files:\n ', repairedCorruptFiles.join('\n  '));
 
   console.log('\nErrors:', errorCount);
 })();
