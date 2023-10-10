@@ -1,9 +1,9 @@
-import { createReadStream, existsSync, Stats } from 'fs';
-import { lstat, mkdtemp, open, readdir, rename, unlink, utimes } from 'fs/promises';
+import { existsSync, Stats } from 'fs';
+import { lstat, mkdtemp, readdir, rename, unlink, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
 import {
-  compareCaseSecondary, compareDottedValues, isAllUppercaseWords, isString, last, toInt, toMixedCase, toNumber
+  compareCaseSecondary, compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber
 } from '@tubular/util';
 import { abs, floor, min, round } from '@tubular/math';
 import { code2Name, lang2to3, lang3to2 } from './lang';
@@ -315,84 +315,6 @@ async function existsAsync(path: string): Promise<boolean> {
   return false;
 }
 
-async function attemptFileRepair(path: string, badMP3: string): Promise<boolean> {
-  try {
-    if (badMP3 === '')
-      return false;
-    else if (badMP3) {
-      const inStream = createReadStream(path, { encoding: 'binary', highWaterMark: 1048576 });
-      let fixed = false;
-      let offset = 0;
-
-      for await (const chunk of inStream) {
-        if (!fixed) {
-          let index = chunk.indexOf(badMP3);
-
-          for (let i = 9; i >= 4 && index < 0; --i)
-            index = chunk.indexOf('LAME3.100'.substring(0, i));
-
-          if (index >= 0) {
-            const fd = await open(path, 'r+');
-
-            await fd.write('3.100\x00', offset + index + 4, 'binary');
-            await fd.close();
-            fixed = true;
-            break;
-          }
-        }
-
-        offset += chunk.length;
-      }
-
-      await new Promise<void>(resolve => inStream.close(() => resolve()));
-
-      return fixed;
-    }
-    else {
-      const backupPath = path.replace(/\.mkv$/i, '[zni].bak.mkv');
-
-      await rename(path, backupPath);
-      await monitorProcess(spawn('mkvmerge', ['-o', path, backupPath]));
-      await monitorProcess(spawn('chmod', ['--reference=' + backupPath, path]));
-      await unlink(backupPath);
-    }
-  }
-  catch (e) {
-    console.error('Error during attempted file repair:', e.message);
-    return false;
-  }
-
-  return true;
-}
-
-async function hasBadMP3(mediaTracks: MediaTrack[], path: string): Promise<string> {
-  let altTracks: string[];
-
-  for (let i = 0; i < mediaTracks.length; ++i) {
-    const track = mediaTracks[i];
-
-    if (track['@type'] === 'Audio' && track.CodecID === 'A_MPEG/L3') {
-      if (!isString(track.Encoded_Library)) {
-        if (!altTracks) {
-          altTracks = (await monitorProcess(spawn('mediainfo', [path]))).split(/\r\n\r\n|\n\n/);
-        }
-
-        const wl = (/Writing library\s*:\s*(.*)[\r\n]/i.exec(altTracks[i]) || [])[1];
-
-        if (wl)
-          track.Encoded_Library = wl;
-      }
-
-      if (isString(track.Encoded_Library) && !track.Encoded_Library.startsWith('LAME'))
-        return '';
-      else if (track.Encoded_Library !== 'LAME3.10' && track.Encoded_Library !== 'LAME3.100')
-        return track.Encoded_Library;
-    }
-  }
-
-  return null;
-}
-
 async function updateAudioTracks(path: string, videoCount: number,
                                  aacTrack: number | null, aacTrackName: string, lang: string,
                                  mp3Track: number, mainChannels: number): Promise<void> {
@@ -477,7 +399,7 @@ async function updateAudioTracks(path: string, videoCount: number,
     await safeUnlink(updatePath);
     await monitorProcess(spawn('mkvmerge', args2), mergeProgress, ErrorMode.DEFAULT, 4096);
     console.log();
-    await monitorProcess(spawn('chmod', ['--reference=' + path, updatePath]));
+    await monitorProcess(spawn('chmod', ['664', updatePath]));
     await rename(path, backupPath);
     await rename(updatePath, path);
 
@@ -523,7 +445,6 @@ let errorCount = 0;
     let videos = 0;
     let other = 0;
 
-    fileLoop:
     for (let file of files) {
       let path = pathJoin(dir, file);
       const stat = await safeLstat(path);
@@ -654,59 +575,19 @@ let errorCount = 0;
           let mp3Track = -1;
           let mp3Name = '';
           let mainChannels = 0;
+          const mediaJson = await monitorProcess(spawn('mediainfo', [path, '--Output=JSON']));
+          const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
+          const typeIndices = {} as Record<string, number>;
 
-          try {
-            for (let attempt = 1; attempt <= 2; ++attempt) {
-              const mediaJson = await monitorProcess(spawn('mediainfo', [path, '--Output=JSON']));
-              const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
-              const typeIndices = {} as Record<string, number>;
-              const badMP3 = await hasBadMP3(mediaTracks, path);
+          for (const track of mediaTracks) {
+            const type = track['@type'].toLowerCase();
+            const index = (typeIndices[type] ?? -1) + 1;
+            const mkvSet = (type === 'video' ? video : type === 'audio' ? audio : []);
 
-              if (mediaTracks.length < 2 || badMP3 != null) {
-                if (attempt === 1)
-                  corruptFiles.push(path);
+            typeIndices[type] = index;
 
-                if (!CAN_MODIFY) {
-                  console.error('   *** CORRUPTED FILE WAS NOT REPAIRED: %s\n', path);
-                  continue fileLoop;
-                }
-                else if (attempt === 2) {
-                  console.error('   *** CORRUPTED FILE WAS NOT REPAIRED\n');
-                  continue fileLoop;
-                }
-                else {
-                  ++errorCount;
-                  console.warn('   *** CORRUPTED: %s', path);
-                  console.warn('   *** Attempting repair...');
-
-                  if (await attemptFileRepair(path, badMP3)) {
-                    corruptFiles.pop();
-                    repairedCorruptFiles.push(path);
-                    continue;
-                  }
-                  else {
-                    console.error('   *** CORRUPTED FILE COULD NOT BE REPAIRED: %s\n', path);
-                    continue fileLoop;
-                  }
-                }
-              }
-
-              for (const track of mediaTracks) {
-                const type = track['@type'].toLowerCase();
-                const index = (typeIndices[type] ?? -1) + 1;
-                const mkvSet = (type === 'video' ? video : type === 'audio' ? audio : []);
-
-                typeIndices[type] = index;
-
-                if (mkvSet[index]?.properties)
-                  mkvSet[index].properties.media = track;
-              }
-
-              break;
-            }
-          }
-          catch (e) {
-            console.warn('No mediainfo:', e.message);
+            if (mkvSet[index]?.properties)
+              mkvSet[index].properties.media = track;
           }
 
           const chapters = (mkvInfo.chapters || [])[0]?.num_entries || 0;
