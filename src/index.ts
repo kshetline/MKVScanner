@@ -3,7 +3,7 @@ import { lstat, mkdtemp, readdir, rename, unlink, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
 import {
-  compareCaseSecondary, compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber
+  compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber
 } from '@tubular/util';
 import { abs, floor, min, round } from '@tubular/math';
 import { code2Name, lang2to3, lang3to2 } from './lang';
@@ -420,6 +420,7 @@ async function updateAudioTracks(path: string, videoCount: number,
   }
 }
 
+const comparator = new Intl.Collator('en', { caseFirst: 'upper' }).compare;
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
 const movieTitles = new Set<string>();
@@ -439,7 +440,7 @@ let errorCount = 0;
 
 (async function (): Promise<void> {
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
-    const files = (await readdir(dir)).sort(compareCaseSecondary);
+    const files = (await readdir(dir)).sort(comparator);
     let videos = 0;
     let other = 0;
 
@@ -911,10 +912,10 @@ let errorCount = 0;
   console.log('Updated audio:', updatedAudio);
   console.log('Legacy rips:', legacyRips);
   console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
-  console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(compareCaseSecondary).join('\n  '));
-  console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(compareCaseSecondary).join('\n  '));
-  console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(compareCaseSecondary).join('\n  '));
-  console.log('\nUnique movie show titles:\n ', Array.from(movieTitles).sort(compareCaseSecondary).join('\n  '));
+  console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(comparator).join('\n  '));
+  console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(comparator).join('\n  '));
+  console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(comparator).join('\n  '));
+  console.log('\nUnique movie show titles:\n ', Array.from(movieTitles).sort(comparator).join('\n  '));
 
   console.log('\nErrors:', errorCount);
 })();
