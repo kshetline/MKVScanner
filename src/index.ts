@@ -530,33 +530,36 @@ let errorCount = 0;
           tvTitles.add(seriesTitle);
 
           let $ = /\s*-\s*(S(\d{1,2}))?(E(\d{1,2})(?:&\d\d)?)\s*-\s*(.+)(\.\w{2,4})$/.exec(file);
+          let gotEpisode = false;
 
           if (!$) {
             $ = /^(\D?)(\d{1,2})(?:\s*-\s*)(.+)(\.\w{2,4})$/.exec(file);
 
-            if (!$) {
-              console.warn('    *** Failed to extract TV episode');
-              continue;
+            if ($) {
+              gotEpisode = true;
+              $.splice(0, 1, '', '', '');
             }
-
-            $.splice(0, 1, '', '', '');
+            else
+              console.warn('    *** Failed to extract TV episode');
           }
 
-          const safeSeriesTitle = seriesTitle.replace(/[^-.!'"_()[\]0-9A-Za-z\u00FF-\uFFFF]/g, ' ')
-            .replace(/\s+/g, ' ').replace('(Brett)', '(1984)').trim();
-          const season = toInt($[2] || '1');
-          const episode = toInt($[4]);
-          const episodeTitle = $[5];
-          const restoredTitle = toNonFileName(episodeTitle);
-          const ext = $[6];
-          const se = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
+          if (gotEpisode) {
+            const safeSeriesTitle = seriesTitle.replace(/[^-.!'"_()[\]0-9A-Za-z\u00FF-\uFFFF]/g, ' ')
+              .replace(/\s+/g, ' ').replace('(Brett)', '(1984)').trim();
+            const season = toInt($[2] || '1');
+            const episode = toInt($[4]);
+            const episodeTitle = $[5];
+            const restoredTitle = toNonFileName(episodeTitle);
+            const ext = $[6];
+            const se = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
 
-          newFileName = `${safeSeriesTitle} - ${se} - ${episodeTitle}${ext}`;
-          newTitle = `${seriesTitle} • ${se} • ${restoredTitle}`;
-          tvEpisodes.add(`${safeSeriesTitle}•${se}`);
+            newFileName = `${safeSeriesTitle} - ${se} - ${episodeTitle}${ext}`;
+            newTitle = `${seriesTitle} • ${se} • ${restoredTitle}`;
+            tvEpisodes.add(`${safeSeriesTitle}•${se}`);
 
-          console.log(newFileName);
-          console.log(newTitle);
+            console.log(newFileName);
+            console.log(newTitle);
+          }
         }
 
         const editArgs = [path];
