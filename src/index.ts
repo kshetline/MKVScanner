@@ -1,4 +1,4 @@
-import { existsSync, Stats } from 'fs';
+import { Stats } from 'fs';
 import { lstat, mkdtemp, readdir, rename, unlink, utimes } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
@@ -9,7 +9,8 @@ import { abs, floor, min, round } from '@tubular/math';
 import { code2Name, lang2to3, lang3to2 } from './lang';
 import * as os from 'os';
 
-const src = (existsSync('V:') ? 'V:' : '/Volumes/video');
+const isWindows = (os.platform() === 'win32');
+const src = (isWindows ? 'V:' : '/Volumes/video');
 const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
 const SKIP_MOVIES = false;
@@ -157,7 +158,7 @@ function formatResolution(dims: string): string {
   if (w >= 2000 || h >= 1100)
     return 'UHD';
   else if (w >= 1300 || h >= 700)
-    return 'Full HD';
+    return 'FHD';
   else if (w >= 750 || h >= 500)
     return 'HD';
   else
@@ -399,7 +400,10 @@ async function updateAudioTracks(path: string, videoCount: number,
     await safeUnlink(updatePath);
     await monitorProcess(spawn('mkvmerge', args2), mergeProgress, ErrorMode.DEFAULT, 4096);
     console.log();
-    await monitorProcess(spawn('chmod', ['664', updatePath]));
+
+    if (!isWindows)
+      await monitorProcess(spawn('chmod', ['--reference=' + backupPath, path]));
+
     await rename(path, backupPath);
     await rename(updatePath, path);
 
@@ -522,43 +526,42 @@ let errorCount = 0;
             .replace(/\s*\((TV|SD|4K|(\d*\s*TV series|Joseph Campbell|BBC Earth))\)/g, '').trim()
             .replace(/(.+), The$/, 'The $1')));
 
-          if (!seriesTitle) {
+          if (!seriesTitle)
             console.warn('    *** Failed to extract TV series title');
-            continue;
-          }
+          else {
+            tvTitles.add(seriesTitle);
 
-          tvTitles.add(seriesTitle);
+            let $ = /\s*-\s*(S(\d{1,2}))?(E(\d{1,2})(?:&\d\d)?)\s*-\s*(.+)(\.\w{2,4})$/.exec(file);
+            let gotEpisode = false;
 
-          let $ = /\s*-\s*(S(\d{1,2}))?(E(\d{1,2})(?:&\d\d)?)\s*-\s*(.+)(\.\w{2,4})$/.exec(file);
-          let gotEpisode = false;
+            if (!$) {
+              $ = /^(\D?)(\d{1,2})(?:\s*-\s*)(.+)(\.\w{2,4})$/.exec(file);
 
-          if (!$) {
-            $ = /^(\D?)(\d{1,2})(?:\s*-\s*)(.+)(\.\w{2,4})$/.exec(file);
-
-            if ($) {
-              gotEpisode = true;
-              $.splice(0, 1, '', '', '');
+              if ($) {
+                gotEpisode = true;
+                $.splice(0, 1, '', '', '');
+              }
+              else
+                console.warn('    *** Failed to extract TV episode');
             }
-            else
-              console.warn('    *** Failed to extract TV episode');
-          }
 
-          if (gotEpisode) {
-            const safeSeriesTitle = seriesTitle.replace(/[^-.!'"_()[\]0-9A-Za-z\u00FF-\uFFFF]/g, ' ')
-              .replace(/\s+/g, ' ').replace('(Brett)', '(1984)').trim();
-            const season = toInt($[2] || '1');
-            const episode = toInt($[4]);
-            const episodeTitle = $[5];
-            const restoredTitle = toNonFileName(episodeTitle);
-            const ext = $[6];
-            const se = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
+            if (gotEpisode) {
+              const safeSeriesTitle = seriesTitle.replace(/[^-.!'"_()[\]0-9A-Za-z\u00FF-\uFFFF]/g, ' ')
+                .replace(/\s+/g, ' ').replace('(Brett)', '(1984)').trim();
+              const season = toInt($[2] || '1');
+              const episode = toInt($[4]);
+              const episodeTitle = $[5];
+              const restoredTitle = toNonFileName(episodeTitle);
+              const ext = $[6];
+              const se = `S${season.toString().padStart(2, '0')}E${episode.toString().padStart(2, '0')}`;
 
-            newFileName = `${safeSeriesTitle} - ${se} - ${episodeTitle}${ext}`;
-            newTitle = `${seriesTitle} • ${se} • ${restoredTitle}`;
-            tvEpisodes.add(`${safeSeriesTitle}•${se}`);
+              newFileName = `${safeSeriesTitle} - ${se} - ${episodeTitle}${ext}`;
+              newTitle = `${seriesTitle} • ${se} • ${restoredTitle}`;
+              tvEpisodes.add(`${safeSeriesTitle}•${se}`);
 
-            console.log(newFileName);
-            console.log(newTitle);
+              console.log(newFileName);
+              console.log(newTitle);
+            }
           }
         }
 
