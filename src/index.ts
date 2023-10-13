@@ -526,8 +526,10 @@ let errorCount = 0;
             .replace(/\s*\((TV|SD|4K|(\d*\s*TV series|Joseph Campbell|BBC Earth))\)/g, '').trim()
             .replace(/(.+), The$/, 'The $1')));
 
-          if (!seriesTitle)
+          if (!seriesTitle) {
             console.warn('    *** Failed to extract TV series title');
+            tvTitles.add('Unknown title for: ' + path);
+          }
           else {
             tvTitles.add(seriesTitle);
 
