@@ -11,6 +11,7 @@ import * as os from 'os';
 
 const isWindows = (os.platform() === 'win32');
 const src = (isWindows ? 'V:' : '/Volumes/video');
+const EARLIEST_CHECK = Date.now() - 7 * 86_400_000;
 const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
 const SKIP_MOVIES = false;
@@ -441,6 +442,7 @@ let movieStorage = 0;
 let tvShows = 0;
 let tvStorage = 0;
 let errorCount = 0;
+let unchecked = 0;
 
 (async function (): Promise<void> {
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
@@ -466,7 +468,6 @@ let errorCount = 0;
       }
       else if (/\.(mkv|mv4|mov)$/i.test(file) && !/(\[zni]|(\.tmp\.)|(\.bak\.))/.test(file)) {
         ++videos;
-        console.log('file: %s (%s)', file, dir);
 
         if (file.endsWith('.upd.mkv')) {
           const baseFile = file.replace(/(\[[^]]*])?\.upd\.mkv$/, '.mkv');
@@ -481,12 +482,14 @@ let errorCount = 0;
           }
           else {
             await safeUnlink(path);
+            console.log('file: %s (%s)', file, dir);
             console.log('    *** Deleting leftover work file');
             continue;
           }
         }
 
         if (!file.endsWith('.mkv')) {
+          console.log('file: %s (%s)', file, dir);
           console.log('    *** NOT MKV - skipping ***\n');
           continue;
         }
@@ -513,7 +516,13 @@ let errorCount = 0;
 
         if (isMovie && SKIP_MOVIES || isTV && SKIP_TV || isExtra && SKIP_EXTRAS)
           continue;
+        else if (stat.mtime.getTime() < EARLIEST_CHECK && stat.mtime.getTime() < EARLIEST_CHECK) {
+          ++unchecked;
+          // console.log('    *** Skipping older file\n');
+          continue;
+        }
 
+        console.log('file: %s (%s)', file, dir);
         let newFileName = '';
         let newTitle = '';
 
@@ -902,7 +911,7 @@ let errorCount = 0;
       }
       else {
         ++other;
-        console.log('other:', file + '\n');
+        console.log('other: %s (%s)\n', file, path);
       }
     }
 
@@ -918,6 +927,7 @@ let errorCount = 0;
   console.log('Other count:', counts.other);
   console.log('Updated:', updated);
   console.log('Updated audio:', updatedAudio);
+  console.log('Unchecked due to age:', unchecked);
   console.log('Legacy rips:', legacyRips);
   console.log('Has unnamed subtitle tracks:', hasUnnamedSubtitleTracks);
   console.log('\nUnique audio track names:\n ', Array.from(audioNames).sort(comparator).join('\n  '));
