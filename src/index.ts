@@ -353,16 +353,16 @@ function aacProgress(data: string, stream: number, progress: Progress): void {
   }
 }
 
-function webmProgress(data: string, stream: number, progress: Progress): void {
+function webmProgress(data: string, stream: number, progress: Progress, done?: boolean): void {
   progress.lastPercent = progress.lastPercent ?? -1;
   progress.percentStr = progress.percentStr ?? '';
   progress.start = progress.start ?? Date.now();
 
-  if (stream === 0) {
+  if (stream === 0 || done) {
     const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
 
-    if ($) {
-      const percent = round(toNumber($[1]), 0.1);
+    if ($ || done) {
+      const percent = done ? 100 : round(toNumber($[1]), 0.1);
 
       if (progress.lastPercent !== percent) {
         progress.lastPercent = percent;
@@ -478,7 +478,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const audioIndex = audio ? audios.findIndex(a => a === audio) : -1;
   let audioPath: string;
 
-  if (audioIndex >= 0 && Date.now() < 0) {
+  if (audioIndex >= 0) {
     audioPath = mpdRoot + '.audio.webm';
     const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', '128k',
                   '-dash', '1', audioPath];
@@ -500,15 +500,19 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         continue;
 
       const videoPath = `${mpdRoot}.v${resolution.h}.webm`;
-      const args = ['-f', 'av_webm', '-e', 'VP9', '-q', '24', '--crop-mode', 'none'];
+      const args = ['-f', 'av_webm', '-e', 'VP9', '-q', '24', '-a', 'none', '--crop-mode', 'none'];
 
       videos.push(videoPath);
 
       if (resolution.w !== w) {
-        args.push('-w', resolution.w.toString(), '-h', round(h / aspect).toString());
+        let anamorph = 1;
 
-        if (resolution.h === 480)
-          args.push('--display-width', (aspect < 1.34 ? '853' : '640'));
+        if (resolution.h === 480) {
+          args.push('--custom-anamorphic', '--pixel-aspect', (aspect > 1.34 ? '32:27' : '8:9'));
+          anamorph = (aspect > 1.34 ? 32 / 27 : 8 / 9);
+        }
+
+        args.push('-w', resolution.w.toString(), '-l', round(resolution.w * anamorph / aspect).toString());
       }
 
       if (subtitleIndex < 0)
@@ -521,13 +525,38 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       process.stdout.write(`    Generating .webm video at ${resolution.h}p... `);
       await safeUnlink(videoPath);
-      await monitorProcess(spawn('HandBrakeCLI', args), (data, stream) => webmProgress(data, stream, progress),
-        ErrorMode.DEFAULT, 4096);
+      await monitorProcess(spawn('HandBrakeCLI', args), (data, stream, done) =>
+        webmProgress(data, stream, progress, done), ErrorMode.DEFAULT, 4096);
       console.log();
     }
   }
 
-  console.log(videos.length);
+  const args: string[] = [];
+
+  videos.reverse().forEach(v => args.push('-f', 'webm_dash_manifest', '-i', v));
+
+  if (audioPath)
+    args.push('-f', 'webm_dash_manifest', '-i', audioPath);
+
+  args.push('-c', 'copy');
+
+  for (let i = 0; i < videos.length + (audioPath ? 1 : 0); ++i)
+    args.push('-map', i.toString());
+
+  let sets = 'id=0,streams=0';
+
+  if (videos.length > 0) {
+    sets += ',1,2'.substring(0, (videos.length - 1) * 2);
+
+    if (audioPath)
+      sets += ' id=1,stream=' + videos.length;
+  }
+
+  args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath);
+
+  process.stdout.write(`    Generating DASH manifest... `);
+  await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
+  console.log();
 
   return true;
 }

@@ -88,7 +88,7 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
     return nodeSpawn(command, args, options);
 }
 
-export function monitorProcess(proc: ChildProcess, markTime: (data?: string, stream?: number) => void = undefined,
+export function monitorProcess(proc: ChildProcess, markTime: (data?: string, stream?: number, done?: boolean) => void = undefined,
                                errorMode: ErrorMode | RegExp | ErrorCheck = ErrorMode.DEFAULT,
                                outputLimit = 0): Promise<string> {
   let errors = '';
@@ -140,15 +140,18 @@ export function monitorProcess(proc: ChildProcess, markTime: (data?: string, str
       }
     });
     proc.on('error', err => {
+      (markTime || NO_OP)(err.message, -1, true);
+
       if (errorMode === ErrorMode.IGNORE_ERRORS)
         resolve(output);
       else
         reject(err);
     });
     proc.on('exit', code => {
+      (markTime || NO_OP)(code.toString(), 0, true);
       clearInterval(slowSpin);
 
-      if (code === 0 || errorMode === ErrorMode.IGNORE_ERRORS || !errors)
+      if (code === 0 || errorMode === ErrorMode.IGNORE_ERRORS)
         resolve(output);
       else
         reject(new ProcessError(errors || code.toString(), code, output));
