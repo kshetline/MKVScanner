@@ -20,6 +20,7 @@ const SKIP_EXTRAS = false;
 const SHOW_DETAILS = true;
 const UPDATE_EXTRAS_METADATA = false;
 const CREATE_ALTERNATE_AUDIO = true;
+const CREATE_STREAMING_SOURCES = true;
 
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
@@ -317,6 +318,67 @@ async function existsAsync(path: string): Promise<boolean> {
   return false;
 }
 
+interface Progress {
+  duration?: number;
+  lastPercent?: number;
+  percentStr?: string;
+  start?: number;
+}
+
+function aacProgress(data: string, stream: number, progress: Progress): void {
+  progress.duration = progress.duration ?? -1;
+  progress.lastPercent = progress.lastPercent ?? -1;
+  progress.percentStr = progress.percentStr ?? '';
+
+  if (stream === 1) {
+    let $: RegExpExecArray;
+
+    if (progress.duration < 1 && ($ = /\bDURATION\b\s*:\s*(\d\d):(\d\d):(\d\d)/.exec(data)))
+      progress.duration = toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3]);
+
+    if (progress.duration > 0 && ($ = /.*\btime=(\d\d):(\d\d):(\d\d)/.exec(data))) {
+      const elapsed = toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3]);
+      const percent = round(elapsed * 100 / progress.duration);
+
+      if (progress.lastPercent !== percent) {
+        progress.lastPercent = percent;
+
+        if (progress.percentStr)
+          process.stdout.write('%\x1B[' + (progress.percentStr.length + 1) + 'D');
+
+        progress.percentStr = percent + '%';
+        process.stdout.write(progress.percentStr + '\x1B[K');
+      }
+    }
+  }
+}
+
+function webmProgress(data: string, stream: number, progress: Progress): void {
+  progress.lastPercent = progress.lastPercent ?? -1;
+  progress.percentStr = progress.percentStr ?? '';
+  progress.start = progress.start ?? Date.now();
+
+  if (stream === 0) {
+    const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
+
+    if ($) {
+      const percent = round(toNumber($[1]), 0.1);
+
+      if (progress.lastPercent !== percent) {
+        progress.lastPercent = percent;
+
+        if (progress.percentStr)
+          process.stdout.write('%\x1B[' + (progress.percentStr.length + 1) + 'D');
+
+        const elapsed = Date.now() - progress.start;
+        const contentElapsed = progress.duration * percent / 100;
+        progress.percentStr = `${percent.toFixed(1)}% (${contentElapsed ? (elapsed / contentElapsed).toFixed(1) : '?'}x)`;
+        process.stdout.write(progress.percentStr + '\x1B[K');
+      }
+    }
+  }
+}
+
 async function updateAudioTracks(path: string, videoCount: number,
                                  aacTrack: number | null, aacTrackName: string, lang: string,
                                  mp3Track: number, mainChannels: number): Promise<void> {
@@ -326,32 +388,7 @@ async function updateAudioTracks(path: string, videoCount: number,
     if (aacTrack > 0) {
       const args = ['-i', path, '-map', '0:1', '-c', 'aac', '-ac', min(mainChannels, 2).toString(),
                     '-b:a', mainChannels < 2 ? '96k' : '192k'];
-      let duration = -1;
-      let lastPercent = -1;
-      let percentStr = '';
-      const aacProgress = (data: string, stream: number): void => {
-        if (stream === 1) {
-          let $: RegExpExecArray;
-
-          if (duration < 1 && ($ = /\bDURATION\b\s*:\s*(\d\d):(\d\d):(\d\d)/.exec(data)))
-            duration = toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3]);
-
-          if (duration > 0 && ($ = /.*\btime=(\d\d):(\d\d):(\d\d)/.exec(data))) {
-            const elapsed = toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3]);
-            const percent = round(elapsed * 100 / duration);
-
-            if (lastPercent !== percent) {
-              lastPercent = percent;
-
-              if (percentStr)
-                process.stdout.write('%\x1B[' + (percentStr.length + 1) + 'D');
-
-              percentStr = percent + '%';
-              process.stdout.write(percentStr + '\x1B[K');
-            }
-          }
-        }
-      };
+      const progress: Progress = {};
 
       aacFile = pathJoin(os.tmpdir(), await mkdtemp('tmp-') + '.tmp.aac');
 
@@ -361,7 +398,8 @@ async function updateAudioTracks(path: string, videoCount: number,
       args.push('-ar', '44100', aacFile);
       process.stdout.write('    Generating AAC track... ');
       await safeUnlink(aacFile);
-      await monitorProcess(spawn('ffmpeg', args), aacProgress, ErrorMode.DEFAULT, 4096);
+      await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
+        ErrorMode.DEFAULT, 4096);
       console.log();
     }
 
@@ -425,6 +463,75 @@ async function updateAudioTracks(path: string, videoCount: number,
   }
 }
 
+async function createStreaming(path: string, audios: AudioTrack[], video: VideoTrack,
+                               subtitles: SubtitlesTrack[], isMovie: boolean, duration: number): Promise<boolean> {
+  const mpdRoot = path.replace(/\s*\(2[DK]\)/, '').replace(/\.mkv$/, '');
+  const mpdPath = mpdRoot + '.mpd';
+  const [w, h] = (video?.properties.pixel_dimensions || '0x0').split('x').map(d => toInt(d));
+  const aspect = w / h;
+
+  if (h > 1100 || video.properties.stereo_mode || await existsAsync(mpdPath))
+    return false;
+
+  const audio = audios.find(a => a.codec === 'AAC' && a.properties.audio_channels <= 2) ||
+    audios.find(a => a.properties.audio_channels <= 2) || audios[0];
+  const audioIndex = audio ? audios.findIndex(a => a === audio) : -1;
+  let audioPath: string;
+
+  if (audioIndex >= 0 && Date.now() < 0) {
+    audioPath = mpdRoot + '.audio.webm';
+    const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', '128k',
+                  '-dash', '1', audioPath];
+    const progress: Progress = {};
+
+    process.stdout.write('    Generating .webm audio... ');
+    await safeUnlink(audioPath);
+    await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
+      ErrorMode.DEFAULT, 4096);
+    console.log();
+  }
+
+  const subtitleIndex = subtitles.findIndex(s => s.properties.track_name === 'en' || s.properties.forced_track);
+  const videos: string[] = [];
+
+  if (video) {
+    for (const resolution of [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 720, h: 480 }]) {
+      if ((!isMovie && resolution.h === 1080) || (resolution.w > w * 1.1))
+        continue;
+
+      const videoPath = `${mpdRoot}.v${resolution.h}.webm`;
+      const args = ['-f', 'av_webm', '-e', 'VP9', '-q', '24', '--crop-mode', 'none'];
+
+      videos.push(videoPath);
+
+      if (resolution.w !== w) {
+        args.push('-w', resolution.w.toString(), '-h', round(h / aspect).toString());
+
+        if (resolution.h === 480)
+          args.push('--display-width', (aspect < 1.34 ? '853' : '640'));
+      }
+
+      if (subtitleIndex < 0)
+        args.push('-s', 'none');
+      else
+        args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
+
+      args.push('-i', path, '-o', videoPath);
+      const progress: Progress = { duration };
+
+      process.stdout.write(`    Generating .webm video at ${resolution.h}p... `);
+      await safeUnlink(videoPath);
+      await monitorProcess(spawn('HandBrakeCLI', args), (data, stream) => webmProgress(data, stream, progress),
+        ErrorMode.DEFAULT, 4096);
+      console.log();
+    }
+  }
+
+  console.log(videos.length);
+
+  return true;
+}
+
 const comparator = new Intl.Collator('en', { caseFirst: 'upper' }).compare;
 const audioNames = new Set<string>();
 const subtitlesNames = new Set<string>();
@@ -443,6 +550,7 @@ let tvShows = 0;
 let tvStorage = 0;
 let errorCount = 0;
 let unchecked = 0;
+let streamingSources = 0;
 
 (async function (): Promise<void> {
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
@@ -466,6 +574,9 @@ let unchecked = 0;
         other += counts.other;
         videos += counts.videos;
       }
+      else if (/\.mpd$/.test(file))
+        ++streamingSources;
+      else if (/\.webm$/.test(file)) {} // Ignore these
       else if (/\.(mkv|mv4|mov)$/i.test(file) && !/(\[zni]|(\.tmp\.)|(\.bak\.))/.test(file)) {
         ++videos;
 
@@ -892,6 +1003,14 @@ let unchecked = 0;
             }
           }
 
+          if (CAN_MODIFY && CREATE_STREAMING_SOURCES) {
+            if (await createStreaming(path, audio, video[0], subtitles, isMovie,
+                mkvInfo.container.properties.duration / 1000000)) {
+              wasUpdated = true;
+              ++streamingSources;
+            }
+          }
+
           if (CAN_MODIFY && newFileName && file !== newFileName) {
             try {
               await rename(path, pathJoin(dir, newFileName));
@@ -934,6 +1053,7 @@ let unchecked = 0;
   console.log('\nUnique subtitles track names:\n ', Array.from(subtitlesNames).sort(comparator).join('\n  '));
   console.log('\nUnique TV show titles:\n ', Array.from(tvTitles).sort(comparator).join('\n  '));
   console.log('\nUnique movie show titles:\n ', Array.from(movieTitles).sort(comparator).join('\n  '));
+  console.log('Streaming sources:', streamingSources);
 
   console.log('\nErrors:', errorCount);
 })();
