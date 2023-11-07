@@ -1,5 +1,5 @@
 import { Stats } from 'fs';
-import { lstat, mkdtemp, readdir, rename, unlink, utimes } from 'fs/promises';
+import { lstat, mkdtemp, readdir, readFile, rename, unlink, utimes, writeFile } from 'fs/promises';
 import { join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
 import {
@@ -372,7 +372,7 @@ function webmProgress(data: string, stream: number, progress: Progress, done?: b
 
         const elapsed = Date.now() - progress.start;
         const contentElapsed = progress.duration * percent / 100;
-        progress.percentStr = `${percent.toFixed(1)}% (${contentElapsed ? (elapsed / contentElapsed).toFixed(1) : '?'}x)`;
+        progress.percentStr = `${percent.toFixed(1)}% (${elapsed ? (contentElapsed / elapsed).toFixed(2) : '?'}x)`;
         process.stdout.write(progress.percentStr + '\x1B[K');
       }
     }
@@ -549,7 +549,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     sets += ',1,2'.substring(0, (videos.length - 1) * 2);
 
     if (audioPath)
-      sets += ' id=1,stream=' + videos.length;
+      sets += ' id=1,streams=' + videos.length;
   }
 
   args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath);
@@ -557,6 +557,10 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   process.stdout.write(`    Generating DASH manifest... `);
   await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
   console.log();
+
+  // Fix manifest file paths
+  await writeFile(mpdPath, (await readFile(mpdPath, 'utf8')).toString()
+    .replace(/(<BaseURL>).*[/\\](.*?)(<\/BaseURL>)/g, '$1$2$3'), 'utf8');
 
   return true;
 }
