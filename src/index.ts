@@ -322,7 +322,6 @@ interface Progress {
   duration?: number;
   lastPercent?: number;
   percentStr?: string;
-  start?: number;
 }
 
 function aacProgress(data: string, stream: number, progress: Progress): void {
@@ -353,9 +352,16 @@ function aacProgress(data: string, stream: number, progress: Progress): void {
   }
 }
 
-function webmProgress(data: string, stream: number, progress: Progress, done?: boolean): void {
-  progress.lastPercent = progress.lastPercent ?? -1;
-  progress.percentStr = progress.percentStr ?? '';
+interface VideoProgress {
+  duration?: number;
+  lastPercent?: Map<number, number>;
+  lastOutput?: string;
+  start?: number;
+}
+
+function webmProgress(data: string, stream: number, resolution: number, done: boolean, progress?: VideoProgress): void {
+  progress.lastPercent = progress.lastPercent ?? new Map();
+  progress.lastOutput = progress.lastOutput ?? '';
   progress.start = progress.start ?? Date.now();
 
   if (stream === 0 || done) {
@@ -363,17 +369,24 @@ function webmProgress(data: string, stream: number, progress: Progress, done?: b
 
     if ($ || done) {
       const percent = done ? 100 : round(toNumber($[1]), 0.1);
+      const lastPercent = progress.lastPercent.get(resolution) ?? -1;
 
-      if (progress.lastPercent !== percent) {
-        progress.lastPercent = percent;
+      if (lastPercent !== percent) {
+        progress.lastPercent.set(resolution, percent);
 
-        if (progress.percentStr)
-          process.stdout.write('%\x1B[' + (progress.percentStr.length + 1) + 'D');
+        if (progress.lastOutput)
+          process.stdout.write('%\x1B[' + (progress.lastOutput.length + 1) + 'D');
 
         const elapsed = Date.now() - progress.start;
         const contentElapsed = progress.duration * percent / 100;
-        progress.percentStr = `${percent.toFixed(1)}% (${elapsed ? (contentElapsed / elapsed).toFixed(2) : '?'}x)`;
-        process.stdout.write(progress.percentStr + '\x1B[K');
+        const resolutions = Array.from(progress.lastPercent.keys()).sort();
+
+        progress.lastOutput = resolutions.map(r =>
+          `${r}p: ${progress.lastPercent.get(r).toFixed(1).padStart(5)}% (${elapsed ?
+            (contentElapsed / elapsed).toFixed(2) : '?'}x)`)
+          .join(', ');
+
+        process.stdout.write(progress.lastOutput + '\x1B[K');
       }
     }
   }
@@ -465,23 +478,28 @@ async function updateAudioTracks(path: string, videoCount: number,
 
 async function createStreaming(path: string, audios: AudioTrack[], video: VideoTrack,
                                subtitles: SubtitlesTrack[], isMovie: boolean, duration: number): Promise<boolean> {
+  const start = Date.now();
+  const resolutions = [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 720, h: 480 }];
   const mpdRoot = path.replace(/\s*\(2[DK]\)/, '').replace(/\.mkv$/, '');
   const mpdPath = mpdRoot + '.mpd';
+  const avPath = mpdRoot + '.av.webm';
   const [w, h] = (video?.properties.pixel_dimensions || '1x1').split('x').map(d => toInt(d));
-  const pixelAspect = w / h;
   const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
   const aspect = wd / hd;
 
-  if (h > 1100 || video.properties.stereo_mode || await existsAsync(mpdPath))
+  if (h > 1100 || video.properties.stereo_mode || await existsAsync(mpdPath) || await existsAsync(avPath))
     return false;
 
+  const shouldSkipVideo = (streamW: number, streamH: number): boolean =>
+    (!isMovie && streamH === 1080) || (streamW > w * 1.1);
+  const videoCount = !video ? 0 : resolutions.reduce((total, r) => total + (shouldSkipVideo(r.w, r.h) ? 0 : 1), 0);
   const audio = audios.find(a => a.codec === 'AAC' && a.properties.audio_channels <= 2) ||
     audios.find(a => a.properties.audio_channels <= 2) || audios[0];
   const audioIndex = audio ? audios.findIndex(a => a === audio) : -1;
   let audioPath: string;
 
   if (audioIndex >= 0) {
-    audioPath = mpdRoot + '.audio.webm';
+    audioPath = `${mpdRoot}.${videoCount === 0 ? 'av' : 'audio'}.webm`;
     const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', '128k',
                   '-dash', '1', audioPath];
     const progress: Progress = {};
@@ -497,16 +515,24 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const videos: string[] = [];
 
   if (video) {
-    for (const resolution of [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 720, h: 480 }]) {
-      if ((!isMovie && resolution.h === 1080) || (resolution.w > w * 1.1))
+    const promises: Promise<string>[] = [];
+    const progress: VideoProgress = { duration };
+
+    for (const resolution of resolutions) {
+      if (shouldSkipVideo(resolution.w, resolution.h))
         continue;
 
-      const videoPath = `${mpdRoot}.v${resolution.h}.webm`;
-      const args = ['-f', 'av_webm', '-e', 'VP9', '-q', '24', '-a', 'none', '--crop-mode', 'none'];
+      const videoPath = `${mpdRoot}.${videoCount === 1 ? 'av' : 'v' + resolution.h}.webm`;
+      const args = ['-f', 'av_webm', '-e', 'VP9', '-q', '24', '--crop-mode', 'none', '-a'];
 
       videos.push(videoPath);
 
-      if (resolution.w !== w || abs(pixelAspect / aspect - 1) > 0.05) {
+      if (videoCount === 1 && audioIndex >= 0)
+        args.push((audioIndex + 1).toString());
+      else
+        args.push('none');
+
+      if (abs(resolution.w - w) > 20) {
         let anamorph = 1;
 
         if (resolution.h === 480) {
@@ -523,56 +549,61 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
 
       args.push('--no-markers', '--inline-parameter-sets', '-i', path, '-o', videoPath);
-      const progress: Progress = { duration };
 
-      process.stdout.write(`    Generating .webm video at ${resolution.h}p... `);
       await safeUnlink(videoPath);
-      await monitorProcess(spawn('HandBrakeCLI', args), (data, stream, done) =>
-        webmProgress(data, stream, progress, done), ErrorMode.DEFAULT, 4096);
-      console.log();
+      promises.push(monitorProcess(spawn('HandBrakeCLI', args), (data, stream, done) =>
+        webmProgress(data, stream, resolution.h, done, progress), ErrorMode.DEFAULT, 4096));
     }
+
+    process.stdout.write(`    Generating .webm video... `);
+    await Promise.all(promises);
+    console.log();
   }
 
-  const args: string[] = [];
+  if (videoCount > 1) {
+    const args: string[] = [];
 
-  videos.reverse().forEach(v => args.push('-f', 'webm_dash_manifest', '-i', v));
-
-  if (audioPath)
-    args.push('-f', 'webm_dash_manifest', '-i', audioPath);
-
-  args.push('-c', 'copy');
-
-  for (let i = 0; i < videos.length + (audioPath ? 1 : 0); ++i)
-    args.push('-map', i.toString());
-
-  let sets = 'id=0,streams=0';
-
-  if (videos.length > 0) {
-    sets += ',1,2'.substring(0, (videos.length - 1) * 2);
+    videos.reverse().forEach(v => args.push('-f', 'webm_dash_manifest', '-i', v));
 
     if (audioPath)
-      sets += ' id=1,streams=' + videos.length;
+      args.push('-f', 'webm_dash_manifest', '-i', audioPath);
+
+    args.push('-c', 'copy');
+
+    for (let i = 0; i < videos.length + (audioPath ? 1 : 0); ++i)
+      args.push('-map', i.toString());
+
+    let sets = 'id=0,streams=0';
+
+    if (videos.length > 0) {
+      sets += ',1,2'.substring(0, (videos.length - 1) * 2);
+
+      if (audioPath)
+        sets += ' id=1,streams=' + videos.length;
+    }
+
+    args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath);
+
+    process.stdout.write(`    Generating DASH manifest... `);
+
+    try {
+      await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
+    }
+    catch (e) {
+      console.error(e);
+      // Leave empty manifest as a signal that the manifest needs to be fixed, but that the audio and video
+      // tracks don't need to be regenerated.
+      await writeFile(mpdPath, '');
+    }
+
+    // Fix manifest file paths
+    await writeFile(mpdPath, (await readFile(mpdPath, 'utf8')).toString()
+      .replace(/(<BaseURL>).*[/\\](.*?)(<\/BaseURL>)/g, '$1$2$3'), 'utf8');
+
+    console.log('done');
   }
 
-  args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath);
-
-  process.stdout.write(`    Generating DASH manifest... `);
-
-  try {
-    await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
-  }
-  catch (e) {
-    console.error(e);
-    // Leave empty manifest as a signal that the manifest needs to be fixed, but that the audio and video
-    // tracks don't need to be regenerated.
-    await writeFile(mpdPath, '');
-  }
-
-  console.log();
-
-  // Fix manifest file paths
-  await writeFile(mpdPath, (await readFile(mpdPath, 'utf8')).toString()
-    .replace(/(<BaseURL>).*[/\\](.*?)(<\/BaseURL>)/g, '$1$2$3'), 'utf8');
+  console.log('    Total time generating streaming content:', formatTime((Date.now() - start) * 1000000));
 
   return true;
 }
@@ -619,7 +650,7 @@ let streamingSources = 0;
         other += counts.other;
         videos += counts.videos;
       }
-      else if (/\.mpd$/.test(file))
+      else if (/\.(mpd|av\.webm)$/.test(file))
         ++streamingSources;
       else if (/\.webm$/.test(file)) {} // Ignore these
       else if (/\.(mkv|mv4|mov)$/i.test(file) && !/(\[zni]|(\.tmp\.)|(\.bak\.))/.test(file)) {
