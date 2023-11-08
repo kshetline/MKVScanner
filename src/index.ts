@@ -467,8 +467,10 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
                                subtitles: SubtitlesTrack[], isMovie: boolean, duration: number): Promise<boolean> {
   const mpdRoot = path.replace(/\s*\(2[DK]\)/, '').replace(/\.mkv$/, '');
   const mpdPath = mpdRoot + '.mpd';
-  const [w, h] = (video?.properties.pixel_dimensions || '0x0').split('x').map(d => toInt(d));
-  const aspect = w / h;
+  const [w, h] = (video?.properties.pixel_dimensions || '1x1').split('x').map(d => toInt(d));
+  const pixelAspect = w / h;
+  const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
+  const aspect = wd / hd;
 
   if (h > 1100 || video.properties.stereo_mode || await existsAsync(mpdPath))
     return false;
@@ -504,7 +506,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       videos.push(videoPath);
 
-      if (resolution.w !== w) {
+      if (resolution.w !== w || abs(pixelAspect / aspect - 1) > 0.05) {
         let anamorph = 1;
 
         if (resolution.h === 480) {
@@ -520,7 +522,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       else
         args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
 
-      args.push('-i', path, '-o', videoPath);
+      args.push('--no-markers', '--inline-parameter-sets', '-i', path, '-o', videoPath);
       const progress: Progress = { duration };
 
       process.stdout.write(`    Generating .webm video at ${resolution.h}p... `);
@@ -555,7 +557,17 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath);
 
   process.stdout.write(`    Generating DASH manifest... `);
-  await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
+
+  try {
+    await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
+  }
+  catch (e) {
+    console.error(e);
+    // Leave empty manifest as a signal that the manifest needs to be fixed, but that the audio and video
+    // tracks don't need to be regenerated.
+    await writeFile(mpdPath, '');
+  }
+
   console.log();
 
   // Fix manifest file paths
