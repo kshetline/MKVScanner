@@ -505,6 +505,9 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
                   '-dash', '1', audioPath];
     const progress: Progress = {};
 
+    if (videoCount === 0)
+      args.splice(args.indexOf('-dash'), 2);
+
     process.stdout.write('    Generating .webm audio... ');
     await safeUnlink(audioPath);
     await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
