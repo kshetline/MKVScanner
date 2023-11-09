@@ -378,13 +378,11 @@ function webmProgress(data: string, stream: number, resolution: number, done: bo
           process.stdout.write('%\x1B[' + (progress.lastOutput.length + 1) + 'D');
 
         const elapsed = Date.now() - progress.start;
-        const contentElapsed = progress.duration * percent / 100;
-        const resolutions = Array.from(progress.lastPercent.keys()).sort();
+        const resolutions = Array.from(progress.lastPercent.keys()).sort((a, b) => a - b);
 
         progress.lastOutput = resolutions.map(r =>
-          `${r}p: ${progress.lastPercent.get(r).toFixed(1).padStart(5)}% (${elapsed ?
-            (contentElapsed / elapsed).toFixed(2) : '?'}x)`)
-          .join(', ');
+          `${r}p:${progress.lastPercent.get(r).toFixed(1).padStart(5)}% (${elapsed ?
+            (progress.duration * progress.lastPercent.get(r) / 100 / elapsed).toFixed(2) : '?'}x)`).join(', ');
 
         process.stdout.write(progress.lastOutput + '\x1B[K');
       }
@@ -498,7 +496,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const audioIndex = audio ? audios.findIndex(a => a === audio) : -1;
   let audioPath: string;
 
-  if (audioIndex >= 0) {
+  if (audioIndex >= 0 && videoCount !== 1) {
     audioPath = `${mpdRoot}.${videoCount === 0 ? 'av' : 'audio'}.webm`;
     const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', '128k',
                   '-dash', '1', audioPath];
@@ -603,7 +601,10 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     console.log('done');
   }
 
-  console.log('    Total time generating streaming content:', formatTime((Date.now() - start) * 1000000));
+  const elapsed = Date.now() - start;
+
+  console.log('    Total time generating streaming content: %s (%sx)',
+    formatTime(elapsed * 1000000).slice(0, -3), (duration / elapsed).toFixed(2));
 
   return true;
 }
