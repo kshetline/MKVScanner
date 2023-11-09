@@ -354,13 +354,15 @@ function aacProgress(data: string, stream: number, progress: Progress): void {
 
 interface VideoProgress {
   duration?: number;
-  lastPercent?: Map<number, number>;
+  percent?: Map<number, number>;
+  speed?: Map<number, number>;
   lastOutput?: string;
   start?: number;
 }
 
 function webmProgress(data: string, stream: number, resolution: number, done: boolean, progress?: VideoProgress): void {
-  progress.lastPercent = progress.lastPercent ?? new Map();
+  progress.percent = progress.percent ?? new Map();
+  progress.speed = progress.speed ?? new Map();
   progress.lastOutput = progress.lastOutput ?? '';
   progress.start = progress.start ?? Date.now();
 
@@ -369,20 +371,21 @@ function webmProgress(data: string, stream: number, resolution: number, done: bo
 
     if ($ || done) {
       const percent = done ? 100 : round(toNumber($[1]), 0.1);
-      const lastPercent = progress.lastPercent.get(resolution) ?? -1;
+      const lastPercent = progress.percent.get(resolution) ?? -1;
 
       if (lastPercent !== percent) {
-        progress.lastPercent.set(resolution, percent);
+        progress.percent.set(resolution, percent);
 
         if (progress.lastOutput)
           process.stdout.write('%\x1B[' + (progress.lastOutput.length + 1) + 'D');
 
         const elapsed = Date.now() - progress.start;
-        const resolutions = Array.from(progress.lastPercent.keys()).sort((a, b) => a - b);
+        const resolutions = Array.from(progress.percent.keys()).sort((a, b) => a - b);
+
+        progress.speed.set(resolution, progress.duration * percent / 100 / elapsed);
 
         progress.lastOutput = resolutions.map(r =>
-          `${r}p:${progress.lastPercent.get(r).toFixed(1).padStart(5)}% (${elapsed ?
-            (progress.duration * progress.lastPercent.get(r) / 100 / elapsed).toFixed(2) : '?'}x)`).join(', ');
+          `${r}p:${progress.percent.get(r).toFixed(1).padStart(5)}% (${progress.speed.get(r)?.toFixed(2) || '?'}x)`).join(', ');
 
         process.stdout.write(progress.lastOutput + '\x1B[K');
       }
