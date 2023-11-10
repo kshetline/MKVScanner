@@ -354,13 +354,13 @@ function aacProgress(data: string, stream: number, progress: Progress): void {
 
 interface VideoProgress {
   duration?: number;
-  percent?: Map<number, number>;
-  speed?: Map<number, number>;
+  percent?: Map<string, number>;
+  speed?: Map<string, number>;
   lastOutput?: string;
   start?: number;
 }
 
-function webmProgress(data: string, stream: number, resolution: number, done: boolean, progress?: VideoProgress): void {
+function webmProgress(data: string, stream: number, resolution: string, done: boolean, progress?: VideoProgress): void {
   progress.percent = progress.percent ?? new Map();
   progress.speed = progress.speed ?? new Map();
   progress.lastOutput = progress.lastOutput ?? '';
@@ -372,6 +372,7 @@ function webmProgress(data: string, stream: number, resolution: number, done: bo
     if ($ || done) {
       const percent = done ? 100 : round(toNumber($[1]), 0.1);
       const lastPercent = progress.percent.get(resolution) ?? -1;
+      const duration = (resolution === '320p' ? 180000 : progress.duration);
 
       if (lastPercent !== percent) {
         progress.percent.set(resolution, percent);
@@ -380,12 +381,12 @@ function webmProgress(data: string, stream: number, resolution: number, done: bo
           process.stdout.write('%\x1B[' + (progress.lastOutput.length + 1) + 'D');
 
         const elapsed = Date.now() - progress.start;
-        const resolutions = Array.from(progress.percent.keys()).sort((a, b) => a - b);
+        const resolutions = Array.from(progress.percent.keys()).sort((a, b) => parseInt(a) - parseInt(b));
 
-        progress.speed.set(resolution, progress.duration * percent / 100 / elapsed);
+        progress.speed.set(resolution, duration * percent / 100 / elapsed);
 
         progress.lastOutput = resolutions.map(r =>
-          `${r}p:${progress.percent.get(r).toFixed(1).padStart(5)}% (${progress.speed.get(r)?.toFixed(2) || '?'}x)`).join(', ');
+          `${r}:${progress.percent.get(r).toFixed(1).padStart(5)}% (${progress.speed.get(r)?.toFixed(2) || '?'}x)`).join(', ');
 
         process.stdout.write(progress.lastOutput + '\x1B[K');
       }
@@ -478,37 +479,49 @@ async function updateAudioTracks(path: string, videoCount: number,
 }
 
 async function createStreaming(path: string, audios: AudioTrack[], video: VideoTrack,
-                               subtitles: SubtitlesTrack[], isMovie: boolean, duration: number): Promise<boolean> {
+                               subtitles: SubtitlesTrack[], isMovie: boolean, isExtra: boolean,
+                               duration: number): Promise<boolean> {
   const start = Date.now();
-  const resolutions = [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 720, h: 480 }];
+  const resolutions = [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 720, h: 480 }, { w: 640, h: 360 }, { w: 569, h: 320 }];
   const mpdRoot = path.replace(/\s*\(2[DK]\)/, '').replace(/\.mkv$/, '');
   const mpdPath = mpdRoot + '.mpd';
   const avPath = mpdRoot + '.av.webm';
+  const mobilePath = mpdRoot + '.mobile.mp4';
+  const samplePath = mpdRoot + '.sample.mp4';
   const [w, h] = (video?.properties.pixel_dimensions || '1x1').split('x').map(d => toInt(d));
   const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
   const aspect = wd / hd;
 
-  if (h > 1100 || video.properties.stereo_mode || await existsAsync(mpdPath) || await existsAsync(avPath))
+  if (h > 1100 || video.properties.stereo_mode)
+    return false;
+
+  const hasDesktopVideo = await existsAsync(mpdPath) || await existsAsync(avPath);
+  const hasMobile = await existsAsync(mobilePath);
+  const hasSample = await existsAsync(samplePath);
+
+  if (hasDesktopVideo && hasMobile && hasSample)
     return false;
 
   const shouldSkipVideo = (streamW: number, streamH: number): boolean =>
-    (!isMovie && streamH === 1080) || (streamW > w * 1.1);
+    (!isMovie && streamH === 1080) || (isExtra && streamH > 480) || (streamW > w * 1.1) ||
+      (hasDesktopVideo && streamH >= 480) || (hasMobile && streamH === 360) || (hasSample && streamH === 320);
   const videoCount = !video ? 0 : resolutions.reduce((total, r) => total + (shouldSkipVideo(r.w, r.h) ? 0 : 1), 0);
+  const groupedVideoCount = videoCount - (hasMobile ? 0 : 1) - (hasSample ? 0 : 1);
   const audio = audios.find(a => a.codec === 'AAC' && a.properties.audio_channels <= 2) ||
     audios.find(a => a.properties.audio_channels <= 2) || audios[0];
   const audioIndex = audio ? audios.findIndex(a => a === audio) : -1;
   let audioPath: string;
 
-  if (audioIndex >= 0 && videoCount !== 1) {
-    audioPath = `${mpdRoot}.${videoCount === 0 ? 'av' : 'audio'}.webm`;
+  if (audioIndex >= 0 && groupedVideoCount !== 1 && !video) {
+    audioPath = `${mpdRoot}.${groupedVideoCount === 0 ? 'av' : 'audio'}.webm`;
     const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', '128k',
                   '-dash', '1', audioPath];
     const progress: Progress = {};
 
-    if (videoCount === 0)
+    if (groupedVideoCount === 0)
       args.splice(args.indexOf('-dash'), 2);
 
-    process.stdout.write('    Generating .webm audio... ');
+    process.stdout.write('    Generating streaming audio... ');
     await safeUnlink(audioPath);
     await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
       ErrorMode.DEFAULT, 4096);
@@ -526,15 +539,23 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       if (shouldSkipVideo(resolution.w, resolution.h))
         continue;
 
-      const videoPath = `${mpdRoot}.${videoCount === 1 ? 'av' : 'v' + resolution.h}.webm`;
-      const args = ['-f', 'av_webm', '-e', 'VP9', '-q', '24', '--crop-mode', 'none', '-a'];
+      const small = resolution.h < 480;
+      const format = (small ? 'av_mp4' : 'av_webm');
+      const codec = (small ? 'x264' : 'VP9');
+      const audioCodec = (small ? 'av_aac' : 'vorbis');
+      const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
+      const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
+      const args = ['-f', format, '-e', codec, '-q', '24', '--crop-mode', 'none', '-a'];
 
       videos.push(videoPath);
 
-      if (videoCount === 1 && audioIndex >= 0)
-        args.push((audioIndex + 1).toString());
+      if ((groupedVideoCount === 1 || small) && audioIndex >= 0)
+        args.push((audioIndex + 1).toString(), '-E', audioCodec, '-R', '44.1', '-B', '128');
       else
         args.push('none');
+
+      if (resolution.h === 320) // For sample video clip
+        args.push('--start-at', duration < 480000 ? 'duration:0' : 'duration:300', '--stop-at', 'duration:180');
 
       if (abs(resolution.w - w) > 20) {
         let anamorph = 1;
@@ -556,15 +577,15 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       await safeUnlink(videoPath);
       promises.push(monitorProcess(spawn('HandBrakeCLI', args), (data, stream, done) =>
-        webmProgress(data, stream, resolution.h, done, progress), ErrorMode.DEFAULT, 4096));
+        webmProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096));
     }
 
-    process.stdout.write(`    Generating .webm video... `);
+    process.stdout.write(`    Generating streaming video... `);
     await Promise.all(promises);
     console.log();
   }
 
-  if (videoCount > 1) {
+  if (groupedVideoCount > 1) {
     const args: string[] = [];
 
     videos.reverse().forEach(v => args.push('-f', 'webm_dash_manifest', '-i', v));
@@ -1087,7 +1108,7 @@ let streamingSources = 0;
           }
 
           if (CAN_MODIFY && CREATE_STREAMING_SOURCES) {
-            if (await createStreaming(path, audio, video[0], subtitles, isMovie,
+            if (await createStreaming(path, audio, video[0], subtitles, isMovie, isExtra,
                 mkvInfo.container.properties.duration / 1000000)) {
               wasUpdated = true;
               ++streamingSources;
