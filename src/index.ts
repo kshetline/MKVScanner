@@ -529,7 +529,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   }
 
   const subtitleIndex = subtitles.findIndex(s => s.properties.track_name === 'en' || s.properties.forced_track);
-  const videos: string[] = [];
+  const dashVideos: string[] = [];
 
   if (video) {
     const promises: Promise<string>[] = [];
@@ -547,7 +547,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
       const args = ['-f', format, '-e', codec, '-q', '24', '--crop-mode', 'none', '-a'];
 
-      videos.push(videoPath);
+      if (!small)
+        dashVideos.push(videoPath);
 
       if ((groupedVideoCount === 1 || small) && audioIndex >= 0)
         args.push((audioIndex + 1).toString(), '-E', audioCodec, '-R', '44.1', '-B', '128');
@@ -588,23 +589,23 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   if (groupedVideoCount > 1) {
     const args: string[] = [];
 
-    videos.reverse().forEach(v => args.push('-f', 'webm_dash_manifest', '-i', v));
+    dashVideos.reverse().forEach(v => args.push('-f', 'webm_dash_manifest', '-i', v));
 
     if (audioPath)
       args.push('-f', 'webm_dash_manifest', '-i', audioPath);
 
     args.push('-c', 'copy');
 
-    for (let i = 0; i < videos.length + (audioPath ? 1 : 0); ++i)
+    for (let i = 0; i < dashVideos.length + (audioPath ? 1 : 0); ++i)
       args.push('-map', i.toString());
 
     let sets = 'id=0,streams=0';
 
-    if (videos.length > 0) {
-      sets += ',1,2'.substring(0, (videos.length - 1) * 2);
+    if (dashVideos.length > 0) {
+      sets += ',1,2'.substring(0, (dashVideos.length - 1) * 2);
 
       if (audioPath)
-        sets += ' id=1,streams=' + videos.length;
+        sets += ' id=1,streams=' + dashVideos.length;
     }
 
     args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath);
