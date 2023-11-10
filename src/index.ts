@@ -680,7 +680,7 @@ let streamingSources = 0;
       }
       else if (/\.(mpd|av\.webm)$/.test(file))
         ++streamingSources;
-      else if (/\.webm$/.test(file)) {} // Ignore these
+      else if (/\.(webm|sample\.mp4|mobile\.mp4)$/.test(file)) {} // Ignore these
       else if (/\.(mkv|mv4|mov)$/i.test(file) && !/(\[zni]|(\.tmp\.)|(\.bak\.))/.test(file)) {
         ++videos;
 
