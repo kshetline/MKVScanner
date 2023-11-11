@@ -507,15 +507,21 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       (hasDesktopVideo && streamH >= 480) || (hasMobile && streamH === 360) || (hasSample && streamH === 320);
   const videoCount = !video ? 0 : resolutions.reduce((total, r) => total + (shouldSkipVideo(r.w, r.h) ? 0 : 1), 0);
   const groupedVideoCount = videoCount - (hasMobile ? 0 : 1) - (hasSample ? 0 : 1);
-  const audio = audios.find(a => a.codec === 'AAC' && a.properties.audio_channels <= 2) ||
-    audios.find(a => a.properties.audio_channels <= 2) || audios[0];
+  let audio = audios[0];
   const audioIndex = audio ? audios.findIndex(a => a === audio) : -1;
   let audioPath: string;
 
-  if (audioIndex >= 0 && groupedVideoCount !== 1 && !video) {
+  if (path.includes('Star Trek - 01 - The Original Series'))
+    audio = audios.find(a => a.codec === 'AAC' && a.properties.audio_channels <= 2) ||
+      audios.find(a => a.properties.audio_channels <= 2) || audios[0];
+
+  const mono = audio.properties.audio_channels === 1;
+  const surround = audio.properties.audio_channels > 3;
+
+  if (audioIndex >= 0 && groupedVideoCount !== 1 && !hasDesktopVideo) {
     audioPath = `${mpdRoot}.${groupedVideoCount === 0 ? 'av' : 'audio'}.webm`;
-    const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', '128k',
-                  '-dash', '1', audioPath];
+    const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', mono ? '96k' : '128k',
+                  '-ac', mono ? '1' : '2', '-dash', '1', audioPath];
     const progress: Progress = {};
 
     if (groupedVideoCount === 0)
@@ -546,12 +552,13 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
       const args = ['-f', format, '-e', codec, '-q', '24', '--crop-mode', 'none', '-a'];
+      const mixdown = (mono ? 'mono' : (surround ? 'dpl2' : 'stereo'));
 
       if (!small)
         dashVideos.push(videoPath);
 
       if ((groupedVideoCount === 1 || small) && audioIndex >= 0)
-        args.push((audioIndex + 1).toString(), '-E', audioCodec, '-R', '44.1', '-B', '128');
+        args.push((audioIndex + 1).toString(), '-E', audioCodec, '-R', '44.1', '-B', mono ? '96' : '128', '--mixdown', mixdown);
       else
         args.push('none');
 
@@ -574,7 +581,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       else
         args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
 
-      args.push('--no-markers', '--inline-parameter-sets', '-i', path, '-o', videoPath);
+      args.push('--no-markers', '-i', path, '-o', videoPath);
 
       await safeUnlink(videoPath);
       promises.push(monitorProcess(spawn('HandBrakeCLI', args), (data, stream, done) =>
