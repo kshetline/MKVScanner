@@ -1,6 +1,6 @@
-import { Stats } from 'fs';
+import { mkdirSync, Stats } from 'fs';
 import { lstat, mkdtemp, readdir, readFile, rename, unlink, utimes, writeFile } from 'fs/promises';
-import { join as pathJoin, sep as pathSeparator } from 'path';
+import { dirname, join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
 import {
   compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber
@@ -10,13 +10,14 @@ import { code2Name, lang2to3, lang3to2 } from './lang';
 import * as os from 'os';
 
 const isWindows = (os.platform() === 'win32');
-const src = (isWindows ? 'V:' : '/Volumes/video');
-const EARLIEST_CHECK = Date.now() - 7 * 86_400_000;
+const VIDEO_SOURCE = (isWindows ? 'V:' : '/Volumes/video');
+const STREAM_SHARE = (isWindows ? 'S:' : '/Volumes/streaming');
+const EARLIEST_CHECK = Date.now() - 7000 * 86_400_000;
 const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
 const SKIP_MOVIES = false;
-const SKIP_TV = false;
-const SKIP_EXTRAS = false;
+const SKIP_TV = true;
+const SKIP_EXTRAS = true;
 const SHOW_DETAILS = true;
 const UPDATE_EXTRAS_METADATA = false;
 const CREATE_ALTERNATE_AUDIO = true;
@@ -483,7 +484,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
                                duration: number): Promise<boolean> {
   const start = Date.now();
   const resolutions = [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 720, h: 480 }, { w: 640, h: 360 }, { w: 569, h: 320 }];
-  const mpdRoot = path.replace(/\s*\(2[DK]\)/, '').replace(/\.mkv$/, '');
+  const mpdRoot = STREAM_SHARE + path.substring(VIDEO_SOURCE.length).replace(/\s*\(2[DK]\)/, '').replace(/\.mkv$/, '');
   const mpdPath = mpdRoot + '.mpd';
   const avPath = mpdRoot + '.av.webm';
   const mobilePath = mpdRoot + '.mobile.mp4';
@@ -501,6 +502,11 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
   if (hasDesktopVideo && hasMobile && hasSample)
     return false;
+
+  const parent = dirname(mpdPath);
+
+  if (!await existsAsync(parent))
+    mkdirSync(parent, { recursive: true });
 
   const shouldSkipVideo = (streamW: number, streamH: number): boolean =>
     (!isMovie && streamH === 1080) || (isExtra && streamH > 480) || (streamW > w * 1.1) ||
@@ -1149,7 +1155,7 @@ let streamingSources = 0;
     return { other, videos };
   }
 
-  const counts = await checkDir(src);
+  const counts = await checkDir(VIDEO_SOURCE);
 
   console.log('\nVideo count:', counts.videos);
   console.log(`Movies (raw): ${movies}, TV episodes (raw): ${tvShows}, Extras: ${extras}`);
