@@ -534,9 +534,25 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       args.splice(args.indexOf('-dash'), 2);
 
     process.stdout.write('    Generating streaming audio... ');
-    await safeUnlink(audioPath);
-    await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
-      ErrorMode.DEFAULT, 4096);
+
+    for (let i = 0; i < audios.length; ++i) {
+      await safeUnlink(audioPath);
+
+      try {
+        await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
+          ErrorMode.DEFAULT, 4096);
+        break;
+      }
+      catch (e) {
+        process.stdout.write('# ');
+
+        if (i === audios.length - 1)
+          throw e;
+
+        args[4] = '0:a:' + (audioIndex !== 0 && i === audioIndex ? 0 : i + 1);
+      }
+    }
+
     console.log();
   }
 
