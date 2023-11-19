@@ -148,7 +148,7 @@ export function monitorProcess(proc: ChildProcess, markTime: (data?: string, str
         reject(err);
     });
     proc.on('exit', code => {
-      (markTime || NO_OP)(code.toString(), 0, true);
+      (markTime || NO_OP)(code.toString(), code === 0 ? 0 : -1, true);
       clearInterval(slowSpin);
 
       if (code === 0 || errorMode === ErrorMode.IGNORE_ERRORS)

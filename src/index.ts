@@ -8,6 +8,7 @@ import {
 import { abs, floor, min, round } from '@tubular/math';
 import { code2Name, lang2to3, lang3to2 } from './lang';
 import * as os from 'os';
+import { ChildProcess } from 'child_process';
 
 const isWindows = (os.platform() === 'win32');
 const VIDEO_SOURCE = (isWindows ? 'V:' : '/Volumes/video');
@@ -370,8 +371,8 @@ function webmProgress(data: string, stream: number, resolution: string, done: bo
   if (stream === 0 || done) {
     const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
 
-    if ($ || done) {
-      const percent = done ? 100 : round(toNumber($[1]), 0.1);
+    if ($ || (done && stream === 0)) {
+      const percent = done ? 100 : min(round(toNumber($[1]), 0.1), 99.9);
       const lastPercent = progress.percent.get(resolution) ?? -1;
       const duration = (resolution === '320p' ? 180000 : progress.duration);
 
@@ -526,34 +527,36 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
   if (audioIndex >= 0 && groupedVideoCount !== 1 && !hasDesktopVideo) {
     audioPath = `${mpdRoot}.${groupedVideoCount === 0 ? 'av' : 'audio'}.webm`;
-    const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', mono ? '96k' : '128k',
-                  '-ac', mono ? '1' : '2', '-dash', '1', audioPath];
-    const progress: Progress = {};
 
-    if (groupedVideoCount === 0)
-      args.splice(args.indexOf('-dash'), 2);
+    if (!await existsAsync(audioPath)) {
+      const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', mono ? '96k' : '128k',
+                    '-ac', mono ? '1' : '2', '-dash', '1', '-f', 'webm', audioPath + '.tmp'];
+      const progress: Progress = {};
 
-    process.stdout.write('    Generating streaming audio... ');
+      if (groupedVideoCount === 0)
+        args.splice(args.indexOf('-dash'), 2);
 
-    for (let i = 0; i < audios.length; ++i) {
-      await safeUnlink(audioPath);
+      process.stdout.write('    Generating streaming audio... ');
 
-      try {
-        await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
-          ErrorMode.DEFAULT, 4096);
-        break;
+      for (let i = 0; i < audios.length; ++i) {
+        try {
+          await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
+            ErrorMode.DEFAULT, 4096);
+          await rename(audioPath + '.tmp', audioPath);
+          break;
+        }
+        catch (e) {
+          process.stdout.write('# ');
+
+          if (i === audios.length - 1)
+            throw e;
+
+          args[4] = '0:a:' + (audioIndex !== 0 && i === audioIndex ? 0 : i + 1);
+        }
       }
-      catch (e) {
-        process.stdout.write('# ');
 
-        if (i === audios.length - 1)
-          throw e;
-
-        args[4] = '0:a:' + (audioIndex !== 0 && i === audioIndex ? 0 : i + 1);
-      }
+      console.log();
     }
-
-    console.log();
   }
 
   const subtitleIndex = subtitles.findIndex(s => s.properties.track_name === 'en' || s.properties.forced_track);
@@ -561,6 +564,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
   if (video) {
     const promises: Promise<string>[] = [];
+    const processes: ChildProcess[] = [];
     const progress: VideoProgress = { duration };
 
     for (const resolution of resolutions) {
@@ -573,11 +577,15 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       const audioCodec = (small ? 'av_aac' : 'vorbis');
       const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
+
       const args = ['-f', format, '-e', codec, '-q', '24', '--crop-mode', 'none', '-a'];
       const mixdown = (mono ? 'mono' : (surround ? 'dpl2' : 'stereo'));
 
       if (!small)
         dashVideos.push(videoPath);
+
+      if (await existsAsync(videoPath))
+        continue;
 
       if ((groupedVideoCount === 1 || small) && audioIndex >= 0)
         args.push((audioIndex + 1).toString(), '-E', audioCodec, '-R', '44.1', '-B', mono ? '96' : '128', '--mixdown', mixdown);
@@ -603,15 +611,35 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       else
         args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
 
-      args.push('--no-markers', '-i', path, '-o', videoPath);
+      args.push('--no-markers', '-i', path, '-o', videoPath + '.tmp');
 
-      await safeUnlink(videoPath);
-      promises.push(monitorProcess(spawn('HandBrakeCLI', args), (data, stream, done) =>
-        webmProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096));
+      const process = spawn('HandBrakeCLI', args);
+      const innerPromise = monitorProcess(process, (data, stream, done) =>
+        webmProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
+      const promise = new Promise<string>((resolve, reject) => {
+        innerPromise.then(result =>
+          rename(videoPath + '.tmp', videoPath).then(() => resolve(result)).catch(err => reject(err))
+        )
+        .catch(err => reject(err));
+      });
+
+      processes.push(process);
+      promises.push(promise);
     }
 
     process.stdout.write(`    Generating streaming video... `);
-    await Promise.all(promises);
+
+    try {
+      await Promise.all(promises);
+    }
+    catch (e) {
+      processes.forEach(p => {
+        try { p.kill(); }
+        catch {}
+      });
+      throw e;
+    }
+
     console.log();
   }
 
@@ -637,12 +665,13 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         sets += ' id=1,streams=' + dashVideos.length;
     }
 
-    args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath);
+    args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath + '.tmp');
 
     process.stdout.write(`    Generating DASH manifest... `);
 
     try {
       await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
+      await rename(mpdPath + '.tmp', mpdPath);
     }
     catch (e) {
       console.error(e);
