@@ -282,6 +282,10 @@ function normalizeTitle(s: string): string {
   return s.replace(/\s+\([^(]*\b(cut|edition|version)\)/i, '');
 }
 
+function tmp(file: string): string {
+  return file.replace(/(\.\w+)$/, '.tmp$1');
+}
+
 async function safeUnlink(path: string): Promise<boolean> {
   try {
     await unlink(path);
@@ -490,6 +494,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const avPath = mpdRoot + '.av.webm';
   const mobilePath = mpdRoot + '.mobile.mp4';
   const samplePath = mpdRoot + '.sample.mp4';
+  const errorReportPath = pathJoin(dirname(path), 'error-report.txt');
   const [w, h] = (video?.properties.pixel_dimensions || '1x1').split('x').map(d => toInt(d));
   const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
   const aspect = wd / hd;
@@ -530,7 +535,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
     if (!await existsAsync(audioPath)) {
       const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', mono ? '96k' : '128k',
-                    '-ac', mono ? '1' : '2', '-dash', '1', '-f', 'webm', audioPath + '.tmp'];
+                    '-ac', mono ? '1' : '2', '-dash', '1', '-f', 'webm', tmp(audioPath)];
       const progress: Progress = {};
 
       if (groupedVideoCount === 0)
@@ -540,16 +545,19 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       for (let i = 0; i < audios.length; ++i) {
         try {
+          await safeUnlink(tmp(audioPath));
           await monitorProcess(spawn('ffmpeg', args), (data, stream) => aacProgress(data, stream, progress),
             ErrorMode.DEFAULT, 4096);
-          await rename(audioPath + '.tmp', audioPath);
+          await rename(tmp(audioPath), audioPath);
           break;
         }
         catch (e) {
           process.stdout.write('# ');
 
-          if (i === audios.length - 1)
+          if (i === audios.length - 1) {
+            await writeFile(errorReportPath, e.message || e.toString());
             throw e;
+          }
 
           args[4] = '0:a:' + (audioIndex !== 0 && i === audioIndex ? 0 : i + 1);
         }
@@ -611,14 +619,15 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       else
         args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
 
-      args.push('--no-markers', '-i', path, '-o', videoPath + '.tmp');
+      args.push('--no-markers', '-i', path, '-o', tmp(videoPath));
+      await safeUnlink(tmp(videoPath));
 
       const process = spawn('HandBrakeCLI', args);
       const innerPromise = monitorProcess(process, (data, stream, done) =>
         webmProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
       const promise = new Promise<string>((resolve, reject) => {
         innerPromise.then(result =>
-          rename(videoPath + '.tmp', videoPath).then(() => resolve(result)).catch(err => reject(err))
+          rename(tmp(videoPath), videoPath).then(() => resolve(result)).catch(err => reject(err))
         )
         .catch(err => reject(err));
       });
@@ -637,6 +646,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         try { p.kill(); }
         catch {}
       });
+      await writeFile(errorReportPath, e.message || e.toString());
       throw e;
     }
 
@@ -665,19 +675,17 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         sets += ' id=1,streams=' + dashVideos.length;
     }
 
-    args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, mpdPath + '.tmp');
+    args.push('-f', 'webm_dash_manifest', '-adaptation_sets', sets, tmp(mpdPath));
 
     process.stdout.write(`    Generating DASH manifest... `);
 
     try {
       await monitorProcess(spawn('ffmpeg', args), null, ErrorMode.DEFAULT);
-      await rename(mpdPath + '.tmp', mpdPath);
+      await rename(tmp(mpdPath), mpdPath);
     }
     catch (e) {
       console.error(e);
-      // Leave empty manifest as a signal that the manifest needs to be fixed, but that the audio and video
-      // tracks don't need to be regenerated.
-      await writeFile(mpdPath, '');
+      await writeFile(errorReportPath, e.message || e.toString());
     }
 
     // Fix manifest file paths
