@@ -494,7 +494,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const avPath = mpdRoot + '.av.webm';
   const mobilePath = mpdRoot + '.mobile.mp4';
   const samplePath = mpdRoot + '.sample.mp4';
-  const errorReportPath = pathJoin(dirname(path), 'error-report.txt');
+  const errorReportPath = STREAM_SHARE + pathJoin(dirname(path.substring(VIDEO_SOURCE.length)), 'error-report.txt');
   const [w, h] = (video?.properties.pixel_dimensions || '1x1').split('x').map(d => toInt(d));
   const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
   const aspect = wd / hd;
@@ -555,7 +555,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
           process.stdout.write('# ');
 
           if (i === audios.length - 1) {
-            await writeFile(errorReportPath, e.message || e.toString());
+            await writeFile(errorReportPath, (e.message || e.toString()) + (e.output ? '\n\n' + e.output : ''));
             throw e;
           }
 
@@ -646,7 +646,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         try { p.kill(); }
         catch {}
       });
-      await writeFile(errorReportPath, e.message || e.toString());
+      await writeFile(errorReportPath, (e.message || e.toString()) + (e.output ? '\n\n' + e.output : ''));
       throw e;
     }
 
@@ -685,7 +685,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     }
     catch (e) {
       console.error(e);
-      await writeFile(errorReportPath, e.message || e.toString());
+      await writeFile(errorReportPath, (e.message || e.toString()) + (e.output ? '\n\n' + e.output : ''));
     }
 
     // Fix manifest file paths

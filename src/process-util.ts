@@ -140,16 +140,20 @@ export function monitorProcess(proc: ChildProcess, markTime: (data?: string, str
       }
     });
     proc.on('error', err => {
-      (markTime || NO_OP)(err.message, -1, true);
+      const msg = err?.message;
 
-      if (errorMode === ErrorMode.IGNORE_ERRORS)
-        resolve(output);
-      else
-        reject(err);
+      (markTime || NO_OP)(msg, -1);
+
+      if (msg && errorMode !== ErrorMode.IGNORE_ERRORS && (errorMode === ErrorMode.FAIL_ON_ANY_ERROR) || errorish(msg)) {
+        errors = errors ? errors + '\n' + msg : msg;
+
+        if (outputLimit > 0 && errors.length > outputLimit)
+          errors = errors.slice(-outputLimit);
+      }
     });
     proc.on('exit', code => {
       if (code == null)
-        (code as any) = 'no-code';
+        code = -1;
 
       (markTime || NO_OP)(code.toString(), code === 0 ? 0 : -1, true);
       clearInterval(slowSpin);
