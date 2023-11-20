@@ -3,7 +3,7 @@ import { lstat, mkdtemp, readdir, readFile, rename, unlink, utimes, writeFile } 
 import { dirname, join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
 import {
-  compareDottedValues, isAllUppercaseWords, last, toInt, toMixedCase, toNumber
+  compareDottedValues, htmlEscape, isAllUppercaseWords, last, toInt, toMixedCase, toNumber
 } from '@tubular/util';
 import { abs, floor, min, round } from '@tubular/math';
 import { code2Name, lang2to3, lang3to2 } from './lang';
@@ -690,7 +690,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
     // Fix manifest file paths
     await writeFile(mpdPath, (await readFile(mpdPath, 'utf8')).toString()
-      .replace(/(<BaseURL>).*[/\\](.*?)(<\/BaseURL>)/g, '$1$2$3'), 'utf8');
+      .replace(/(<BaseURL>).*[/\\](.*?)(<\/BaseURL>)/g, (_0, $1, $2, $3) => $1 + htmlEscape($2) + $3), 'utf8');
 
     console.log('done');
   }
