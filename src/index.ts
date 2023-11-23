@@ -572,7 +572,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
   if (video) {
     const promises: Promise<string>[] = [];
-    const processes: ChildProcess[] = [];
+    const processes: Set<ChildProcess> = new Set();
     const progress: VideoProgress = { duration };
 
     for (const resolution of resolutions) {
@@ -620,19 +620,35 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
 
       args.push('--no-markers', '-i', path, '-o', tmp(videoPath));
-      await safeUnlink(tmp(videoPath));
 
-      const process = spawn('HandBrakeCLI', args);
-      const innerPromise = monitorProcess(process, (data, stream, done) =>
-        webmProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
       const promise = new Promise<string>((resolve, reject) => {
-        innerPromise.then(result =>
-          rename(tmp(videoPath), videoPath).then(() => resolve(result)).catch(err => reject(err))
-        )
-        .catch(err => reject(err));
+        (async (): Promise<void> => {
+          do {
+            await safeUnlink(tmp(videoPath));
+            const process = spawn('HandBrakeCLI', args, { maxbuffer: 10485760 });
+            processes.add(process);
+            const innerPromise = monitorProcess(process, (data, stream, done) =>
+              webmProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
+
+            try {
+              const output = await innerPromise;
+              await rename(tmp(videoPath), videoPath);
+              resolve(output);
+              break;
+            }
+            catch (e) {
+              if (e.code !== 3221225477) {
+                reject(e);
+                break;
+              }
+            }
+            finally {
+              processes.delete(process);
+            }
+          } while (true);
+        })();
       });
 
-      processes.push(process);
       promises.push(promise);
     }
 
@@ -686,11 +702,19 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     catch (e) {
       console.error(e);
       await writeFile(errorReportPath, (e.message || e.toString()) + (e.output ? '\n\n' + e.output : ''));
+      throw e;
     }
 
     // Fix manifest file paths
     await writeFile(mpdPath, (await readFile(mpdPath, 'utf8')).toString()
-      .replace(/(<BaseURL>).*[/\\](.*?)(<\/BaseURL>)/g, (_0, $1, $2, $3) => $1 + htmlEscape($2) + $3), 'utf8');
+      .replace(/(<BaseURL>).*[/\\](.*?)(<\/BaseURL>)/g, (_0, $1, $2, $3) => {
+        let path = $2;
+
+        if (/[&<>]/.test(path) && !/&[#a-z0-9]+;/.test(path))
+          path = htmlEscape($2);
+
+        return $1 + path + $3;
+      }), 'utf8');
 
     console.log('done');
   }

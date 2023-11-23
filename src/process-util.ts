@@ -152,9 +152,7 @@ export function monitorProcess(proc: ChildProcess, markTime: (data?: string, str
       }
     });
     proc.on('exit', code => {
-      if (code == null)
-        code = -1;
-
+      code = code ?? -999999;
       (markTime || NO_OP)(code.toString(), code === 0 ? 0 : -1, true);
       clearInterval(slowSpin);
 
