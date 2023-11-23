@@ -75,17 +75,13 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
     else if (command === 'which')
       command = 'where';
 
-    const cmd = process.env.comspec || 'cmd';
-
     if (options?.uid != null) {
       options = Object.assign({}, options);
       delete options.uid;
     }
-
-    return nodeSpawn(cmd, ['/c', command, ...args], options);
   }
-  else
-    return nodeSpawn(command, args, options);
+
+  return nodeSpawn(command, args, options);
 }
 
 export function monitorProcess(proc: ChildProcess, markTime: (data?: string, stream?: number, done?: boolean) => void = undefined,

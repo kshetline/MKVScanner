@@ -362,18 +362,23 @@ interface VideoProgress {
   duration?: number;
   percent?: Map<string, number>;
   speed?: Map<string, number>;
+  errors?: Map<string, number>;
   lastOutput?: string;
   start?: number;
 }
 
-function webmProgress(data: string, stream: number, resolution: string, done: boolean, progress?: VideoProgress): void {
+function videoProgress(data: string, stream: number, resolution: string, done: boolean, progress?: VideoProgress): void {
   progress.percent = progress.percent ?? new Map();
   progress.speed = progress.speed ?? new Map();
+  progress.errors = progress.errors ?? new Map();
   progress.lastOutput = progress.lastOutput ?? '';
   progress.start = progress.start ?? Date.now();
 
   if (stream === 0 || done) {
     const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
+
+    if (done && stream !== 0)
+      progress.errors.set(resolution, (progress.errors.get(resolution) || 0) + 1);
 
     if ($ || (done && stream === 0)) {
       const percent = done ? 100 : min(round(toNumber($[1]), 0.1), 99.9);
@@ -392,7 +397,8 @@ function webmProgress(data: string, stream: number, resolution: string, done: bo
         progress.speed.set(resolution, duration * percent / 100 / elapsed);
 
         progress.lastOutput = resolutions.map(r =>
-          `${r}:${progress.percent.get(r).toFixed(1).padStart(5)}% (${progress.speed.get(r)?.toFixed(2) || '?'}x)`).join(', ');
+          `${r}:${progress.percent.get(r).toFixed(1).padStart(5)}% (${progress.speed.get(r)?.toFixed(2) || '?'}x)${
+            '*'.repeat(progress.errors.get(r) || 0)}`).join(', ');
 
         process.stdout.write(progress.lastOutput + '\x1B[K');
       }
@@ -625,10 +631,10 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         (async (): Promise<void> => {
           do {
             await safeUnlink(tmp(videoPath));
-            const process = spawn('HandBrakeCLI', args, { maxbuffer: 10485760 });
+            const process = spawn('HandBrakeCLI', args, { maxbuffer: 20971520 });
             processes.add(process);
             const innerPromise = monitorProcess(process, (data, stream, done) =>
-              webmProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
+              videoProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
 
             try {
               const output = await innerPromise;
