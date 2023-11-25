@@ -629,6 +629,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       const promise = new Promise<string>((resolve, reject) => {
         (async (): Promise<void> => {
+          let errCount = 0;
+
           do {
             await safeUnlink(tmp(videoPath));
             const process = spawn('HandBrakeCLI', args, { maxbuffer: 20971520 });
@@ -643,7 +645,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
               break;
             }
             catch (e) {
-              if (e.code !== 3221225477) {
+              if (e.code !== 3221225477 || ++errCount > 3) {
                 reject(e);
                 break;
               }
