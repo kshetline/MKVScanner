@@ -609,15 +609,25 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       if (resolution.h === 320) // For sample video clip
         args.push('--start-at', duration < 480000 ? 'duration:0' : 'duration:300', '--stop-at', 'duration:180');
 
-      if (abs(resolution.w - w) > 20) {
-        let anamorph = 1;
+      let encodeW = resolution.w;
+      let encodeH = resolution.h;
+      let anamorph = 1;
 
-        if (resolution.h === 480) {
+      if (resolution.h === 480)
+        anamorph = (aspect >= 1.75 ? 32 / 27 : 8 / 9);
+
+      if (aspect >= 1.75 && abs(resolution.w - w) > 20)
+        encodeH = resolution.w * anamorph / aspect;
+      else if (aspect < 1.75 && abs(resolution.h - h) > 20) {
+        encodeW = resolution.h / anamorph * aspect;
+        encodeH = resolution.h;
+      }
+
+      if (encodeW !== resolution.w || encodeH !== resolution.h) {
+        args.push('-w', round(encodeW).toString(), '-l', round(encodeH).toString());
+
+        if (anamorph !== 1)
           args.push('--custom-anamorphic', '--pixel-aspect', (aspect > 1.34 ? '32:27' : '8:9'));
-          anamorph = (aspect > 1.34 ? 32 / 27 : 8 / 9);
-        }
-
-        args.push('-w', resolution.w.toString(), '-l', round(resolution.w * anamorph / aspect).toString());
       }
 
       if (subtitleIndex < 0)
