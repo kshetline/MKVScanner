@@ -633,7 +633,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
           do {
             await safeUnlink(tmp(videoPath));
-            const process = spawn('HandBrakeCLI', args, { maxbuffer: 20971520 });
+            const cmd = (!isWindows || errorCount === 0 ? 'HandBrakeCLI-1_6_1' : 'HandBrakeCLI');
+            const process = spawn(cmd, args, { maxbuffer: 20971520 });
             processes.add(process);
             const innerPromise = monitorProcess(process, (data, stream, done) =>
               videoProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
