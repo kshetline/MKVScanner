@@ -521,7 +521,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     mkdirSync(parent, { recursive: true });
 
   const shouldSkipVideo = (streamW: number, streamH: number): boolean =>
-    (!isMovie && streamH === 1080) || (isExtra && streamH > 480) || (streamW > w * 1.1 && streamH > h * 1.1) ||
+    (!isMovie && streamH === 1080) || (isExtra && streamH > 480) || (streamW > w * 1.25 && streamH > h * 1.25) ||
       (hasDesktopVideo && streamH >= 480) || (hasMobile && streamH === 360) || (hasSample && streamH === 320);
   const videoCount = !video ? 0 : resolutions.reduce((total, r) => total + (shouldSkipVideo(r.w, r.h) ? 0 : 1), 0);
   const groupedVideoCount = videoCount - (hasMobile ? 0 : 1) - (hasSample ? 0 : 1);
