@@ -51,6 +51,11 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
     uid = options?.uid;
   }
 
+  if (options?.shell?.toString().toLowerCase() === 'powershell.exe') {
+    command = command.replace(/ /g, '` ');
+    args.forEach((arg, i) => args[i] = arg.replace(/([ ()])/g, '`$1'));
+  }
+
   if (uid != null) {
     options = options ?? {};
     options.uid = uid;

@@ -536,6 +536,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const mono = audio.properties.audio_channels === 1;
   const surround = audio.properties.audio_channels > 3;
 
+  console.log('    Generating streaming content started at', new Date().toLocaleString());
+
   if (audioIndex >= 0 && groupedVideoCount !== 1 && !hasDesktopVideo) {
     audioPath = `${mpdRoot}.${groupedVideoCount === 0 ? 'av' : 'audio'}.webm`;
 
@@ -643,8 +645,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
           do {
             await safeUnlink(tmp(videoPath));
-            const cmd = (!isWindows || errorCount === 0 ? 'HandBrakeCLI-1_6_1' : 'HandBrakeCLI');
-            const process = spawn(cmd, args, { maxbuffer: 20971520 });
+            const process = spawn('HandBrakeCLI', args, { shell: isWindows ? 'powershell.exe' : false });
             processes.add(process);
             const innerPromise = monitorProcess(process, (data, stream, done) =>
               videoProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
