@@ -14,7 +14,8 @@ export enum ErrorMode { DEFAULT, FAIL_ON_ANY_ERROR, IGNORE_ERRORS }
 export type ErrorCheck = (s: string) => boolean;
 
 export class ProcessError extends Error {
-  constructor(msg: string, public code: number, public output: string) {
+  constructor(msg: string, public code: number, public output: string,
+              public args: string[]) {
     super(msg);
   }
 }
@@ -24,6 +25,15 @@ const NO_OP = (): void => {};
 
 export function stripFormatting(s: string): string {
   return s?.replace(/\x1B\[[\d;]*[A-Za-z]/g, '');
+}
+
+function psQuoteEscape(arg: string): string {
+  if (!/[ (){}@?|$%<>`'"^*+]/.test(arg))
+    return arg;
+  else if (!/'/.test(arg))
+    return "'" + arg.replace(/`/g, '``') + "'";
+  else
+    return '"' + arg + arg.replace(/([`$])/g, '`$1') + '"';
 }
 
 function errorish(s: string): boolean {
@@ -52,8 +62,8 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
   }
 
   if (options?.shell?.toString().toLowerCase() === 'powershell.exe') {
-    command = command.replace(/ /g, '` ');
-    args.forEach((arg, i) => args[i] = arg.replace(/([ ()])/g, '`$1'));
+    command = psQuoteEscape(command);
+    args.forEach((arg, i) => args[i] = psQuoteEscape(arg));
   }
 
   if (uid != null) {
@@ -94,6 +104,7 @@ export function monitorProcess(proc: ChildProcess, markTime: (data?: string, str
                                outputLimit = 0): Promise<string> {
   let errors = '';
   let output = '';
+  let exitCode = 0;
 
   return new Promise<string>((resolve, reject) => {
     const slowSpin = unref(setInterval(markTime || NO_OP, MAX_MARK_TIME_DELAY));
@@ -153,14 +164,17 @@ export function monitorProcess(proc: ChildProcess, markTime: (data?: string, str
       }
     });
     proc.on('exit', code => {
-      code = code ?? -999999;
+      exitCode = code;
+    });
+    proc.on('close', code => {
+      code = exitCode || (code ?? -999999);
       (markTime || NO_OP)(code.toString(), code === 0 ? 0 : -1, true);
       clearInterval(slowSpin);
 
       if (code === 0 || errorMode === ErrorMode.IGNORE_ERRORS)
         resolve(output);
       else
-        reject(new ProcessError(errors || code.toString(), code, output));
+        reject(new ProcessError(errors || code.toString(), code, output, proc.spawnargs));
     });
   });
 }

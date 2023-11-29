@@ -11,8 +11,9 @@ import * as os from 'os';
 import { ChildProcess } from 'child_process';
 
 const isWindows = (os.platform() === 'win32');
-const VIDEO_SOURCE = (isWindows ? 'V:' : '/Volumes/video');
-const STREAM_SHARE = (isWindows ? 'S:' : '/Volumes/streaming');
+const isLinux = (os.platform() === 'linux');
+const VIDEO_SOURCE = (isWindows ? 'V:' : isLinux ? '/mnt/video' : '/Volumes/video');
+const STREAM_SHARE = (isWindows ? 'S:' : isLinux ? '/mnt/streaming' : '/Volumes/video');
 const EARLIEST_CHECK = Date.now() - 7000 * 86_400_000;
 const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
@@ -505,7 +506,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
   const aspect = wd / hd;
 
-  if (h > 1100 || video.properties.stereo_mode)
+  if (h > 1100 || video?.properties.stereo_mode)
     return false;
 
   const hasDesktopVideo = await existsAsync(mpdPath) || await existsAsync(avPath);
@@ -645,7 +646,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
           do {
             await safeUnlink(tmp(videoPath));
-            const process = spawn('HandBrakeCLI', args, { shell: isWindows ? 'powershell.exe' : false });
+            const cmd = (!isWindows || errCount === 0 ? 'HandBrakeCLI' : 'HandBrakeCLI-1_7_1');
+            const process = spawn(cmd, args, { maxbuffer: 10485760 });
             processes.add(process);
             const innerPromise = monitorProcess(process, (data, stream, done) =>
               videoProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
