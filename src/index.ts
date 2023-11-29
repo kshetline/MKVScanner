@@ -368,6 +368,15 @@ interface VideoProgress {
   start?: number;
 }
 
+interface VideoRender {
+  args: string[];
+  name: string;
+  process?: ChildProcess;
+  promise?: Promise<string>;
+  tries: number;
+  videoPath: string;
+}
+
 function videoProgress(data: string, stream: number, resolution: string, done: boolean, progress?: VideoProgress): void {
   progress.percent = progress.percent ?? new Map();
   progress.speed = progress.speed ?? new Map();
@@ -378,11 +387,11 @@ function videoProgress(data: string, stream: number, resolution: string, done: b
   if (stream === 0 || done) {
     const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
 
-    if (done && stream !== 0)
+    if (done && stream > 0)
       progress.errors.set(resolution, (progress.errors.get(resolution) || 0) + 1);
 
-    if ($ || (done && stream === 0)) {
-      const percent = done ? 100 : min(round(toNumber($[1]), 0.1), 99.9);
+    if ($ || (done && stream <= 0)) {
+      const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber($[1]), 0.1), 99.9));
       const lastPercent = progress.percent.get(resolution) ?? -1;
       const duration = (resolution === '320p' ? 180000 : progress.duration);
 
@@ -397,9 +406,12 @@ function videoProgress(data: string, stream: number, resolution: string, done: b
 
         progress.speed.set(resolution, duration * percent / 100 / elapsed);
 
-        progress.lastOutput = resolutions.map(r =>
-          `${r}:${progress.percent.get(r).toFixed(1).padStart(5)}% (${progress.speed.get(r)?.toFixed(2) || '?'}x)${
-            '*'.repeat(progress.errors.get(r) || 0)}`).join(', ');
+        progress.lastOutput = resolutions.map(r => {
+          const percent = progress.percent.get(r);
+          const percentStr = percent < 0 ? '(redo)' : percent.toFixed(1).padStart(5) + '%';
+          return `${r}:${percentStr} (${progress.speed.get(r)?.toFixed(2) || '?'}x)${
+            '*'.repeat(progress.errors.get(r) || 0)}`;
+        }).join(', ');
 
         process.stdout.write(progress.lastOutput + '\x1B[K');
       }
@@ -580,8 +592,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const dashVideos: string[] = [];
 
   if (video) {
-    const promises: Promise<string>[] = [];
-    const processes: Set<ChildProcess> = new Set();
+    const videoQueue: VideoRender[] = [];
     const progress: VideoProgress = { duration };
 
     for (const resolution of resolutions) {
@@ -639,54 +650,69 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
 
       args.push('--no-markers', '-i', path, '-o', tmp(videoPath));
-
-      const promise = new Promise<string>((resolve, reject) => {
-        (async (): Promise<void> => {
-          let errCount = 0;
-
-          do {
-            await safeUnlink(tmp(videoPath));
-            const cmd = (!isWindows || errCount === 0 ? 'HandBrakeCLI' : 'HandBrakeCLI-1_7_1');
-            const process = spawn(cmd, args, { maxbuffer: 10485760 });
-            processes.add(process);
-            const innerPromise = monitorProcess(process, (data, stream, done) =>
-              videoProgress(data, stream, resolution.h + 'p', done, progress), ErrorMode.DEFAULT, 4096);
-
-            try {
-              const output = await innerPromise;
-              await rename(tmp(videoPath), videoPath);
-              resolve(output);
-              break;
-            }
-            catch (e) {
-              if (e.code !== 3221225477 || ++errCount > 3) {
-                reject(e);
-                break;
-              }
-            }
-            finally {
-              processes.delete(process);
-            }
-          } while (true);
-        })();
-      });
-
-      promises.push(promise);
+      videoQueue.push({ args, name: resolution.h + 'p', tries: 0, videoPath });
     }
 
     process.stdout.write(`    Generating streaming video... `);
 
-    try {
-      await Promise.all(promises);
-    }
-    catch (e) {
-      processes.forEach(p => {
-        try { p.kill(); }
-        catch {}
-      });
-      await writeFile(errorReportPath, (e.message || e.toString()) + (e.output ? '\n\n' + e.output : ''));
-      throw e;
-    }
+    await new Promise<void>((resolve, reject) => {
+      (async (): Promise<void> => {
+        const simultaneousMax = isWindows ? 3 : 10;
+        let running = 0;
+        const redoQueue: VideoRender[] = [];
+
+        const startTask = (task: VideoRender): void => {
+            task.process = spawn('HandBrakeCLI', task.args, { maxbuffer: 20971520 });
+            task.promise = monitorProcess(task.process, (data, stream, done) =>
+              videoProgress(data, stream, task.name, done, progress), ErrorMode.DEFAULT, 4096);
+        };
+
+        const checkQueue = (): void => {
+          if (running < simultaneousMax && videoQueue.length > 0) {
+            const task = videoQueue.splice(0, 1)[0];
+
+            ++running;
+            startTask(task);
+            task.promise.then(() => {
+              rename(tmp(task.videoPath), task.videoPath).finally(() => {
+                --running;
+                checkQueue();
+              });
+            }).catch(err => {
+              --running;
+
+              if (err.code === 3221225477) {
+                const percentDone = progress.percent?.get(task.name) || 0;
+
+                if (++task.tries < 3 && percentDone < 10) {
+                  videoQueue.splice(0, 0, task);
+                  videoProgress('', -1, task.name, true);
+                  checkQueue();
+                }
+                else {
+                  redoQueue.push(task);
+                  videoProgress('', -1, task.name, true);
+                }
+              }
+              else
+                reject(err);
+            });
+
+            checkQueue();
+          }
+          else if (running === 0 && redoQueue.length > 0) {
+            const task = redoQueue.splice(0, 1)[0];
+
+            startTask(task);
+            task.promise.then(() => checkQueue()).catch(err => reject(err));
+          }
+          else if (running === 0)
+            resolve();
+        };
+
+        checkQueue();
+      })();
+    });
 
     console.log();
   }
@@ -778,6 +804,9 @@ let streamingSources = 0;
     for (let file of files) {
       let path = pathJoin(dir, file);
       const stat = await safeLstat(path);
+
+      if (depth === 0 && !file.startsWith('Frozen') || depth === 1 && !file.startsWith('1'))
+        continue;
 
       if (!stat || file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
         // Do nothing
