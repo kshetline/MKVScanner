@@ -805,9 +805,6 @@ let streamingSources = 0;
       let path = pathJoin(dir, file);
       const stat = await safeLstat(path);
 
-      if (depth === 0 && !file.startsWith('Frozen') || depth === 1 && !file.startsWith('1'))
-        continue;
-
       if (!stat || file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
         // Do nothing
       }
