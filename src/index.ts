@@ -680,7 +680,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       };
 
       const checkQueue = (): void => {
-        if (running < simultaneousMax && (videoQueue.length > 0 || (running === 1 && redoQueue.length > 0))) {
+        if (running < simultaneousMax && (videoQueue.length > 0 ||
+            (running === 1 && redoQueue.length > 0 && redoQueue[0].tries < 5))) {
           const task = videoQueue.pop() || redoQueue.splice(0, 1)[0];
 
           ++running;
@@ -718,7 +719,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
           startTask(task);
           task.promise.then(() => rename(tmp(task.videoPath), task.videoPath).finally(() => checkQueue()))
-          .catch(err => cleanUpAndFail(err)).finally(() => task.process === undefined);
+          .catch(err => cleanUpAndFail(err));
         }
         else if (running === 0)
           resolve();
