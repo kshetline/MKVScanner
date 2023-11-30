@@ -377,7 +377,7 @@ interface VideoRender {
   videoPath: string;
 }
 
-function videoProgress(data: string, stream: number, resolution: string, done: boolean, progress?: VideoProgress): void {
+function videoProgress(data: string, stream: number, name: string, done: boolean, progress?: VideoProgress): void {
   progress.percent = progress.percent ?? new Map();
   progress.speed = progress.speed ?? new Map();
   progress.errors = progress.errors ?? new Map();
@@ -388,15 +388,15 @@ function videoProgress(data: string, stream: number, resolution: string, done: b
     const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
 
     if (done && stream > 0)
-      progress.errors.set(resolution, (progress.errors.get(resolution) || 0) + 1);
+      progress.errors.set(name, (progress.errors.get(name) || 0) + 1);
 
     if ($ || (done && stream <= 0)) {
       const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber($[1]), 0.1), 99.9));
-      const lastPercent = progress.percent.get(resolution) ?? -1;
-      const duration = (resolution === '320p' ? 180000 : progress.duration);
+      const lastPercent = progress.percent.get(name) ?? -1;
+      const duration = (name === '320p' ? 180000 : progress.duration);
 
       if (lastPercent !== percent) {
-        progress.percent.set(resolution, percent);
+        progress.percent.set(name, percent);
 
         if (progress.lastOutput)
           process.stdout.write('%\x1B[' + (progress.lastOutput.length + 1) + 'D');
@@ -404,13 +404,14 @@ function videoProgress(data: string, stream: number, resolution: string, done: b
         const elapsed = Date.now() - progress.start;
         const resolutions = Array.from(progress.percent.keys()).sort((a, b) => parseInt(a) - parseInt(b));
 
-        progress.speed.set(resolution, duration * percent / 100 / elapsed);
-
+        progress.speed.set(name, stream < 0 ? -1 : duration * percent / 100 / elapsed);
         progress.lastOutput = resolutions.map(r => {
           const percent = progress.percent.get(r);
           const percentStr = percent < 0 ? '(redo)' : percent.toFixed(1).padStart(5) + '%';
-          return `${r}:${percentStr} (${progress.speed.get(r)?.toFixed(2) || '?'}x)${
-            '*'.repeat(progress.errors.get(r) || 0)}`;
+          const speed = progress.speed.get(r) || 0;
+          const speedStr = speed <= 0 ? '----' : speed.toFixed(2);
+
+          return `${r}:${percentStr} (${speedStr}x)${'*'.repeat(progress.errors.get(r) || 0)}`;
         }).join(', ');
 
         process.stdout.write(progress.lastOutput + '\x1B[K');
@@ -459,8 +460,7 @@ async function updateAudioTracks(path: string, videoCount: number,
         tracks += '0:' + i + ',';
 
       args2.push('--original-flag', '0', '--track-name', '0:' + aacTrackName,
-        '--language', '0:' + (lang2to3[lang] || lang || 'und'),
-        aacFile, '--track-order', tracks + '1:0');
+        '--language', '0:' + (lang2to3[lang] || lang || 'und'), aacFile, '--track-order', tracks + '1:0');
     }
 
     let percentStr = '';
@@ -605,7 +605,6 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       const audioCodec = (small ? 'av_aac' : 'vorbis');
       const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
-
       const args = ['-f', format, '-e', codec, '-q', '24', '--crop-mode', 'none', '-a'];
       const mixdown = (mono ? 'mono' : (surround ? 'dpl2' : 'stereo'));
 
@@ -656,62 +655,76 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     process.stdout.write(`    Generating streaming video... `);
 
     await new Promise<void>((resolve, reject) => {
-      (async (): Promise<void> => {
-        const simultaneousMax = isWindows ? 3 : 10;
-        let running = 0;
-        const redoQueue: VideoRender[] = [];
+      const simultaneousMax = isWindows ? 3 : 10;
+      let running = 0;
+      const redoQueue: VideoRender[] = [];
 
-        const startTask = (task: VideoRender): void => {
-            task.process = spawn('HandBrakeCLI', task.args, { maxbuffer: 20971520 });
-            task.promise = monitorProcess(task.process, (data, stream, done) =>
-              videoProgress(data, stream, task.name, done, progress), ErrorMode.DEFAULT, 4096);
-        };
+      const cleanUpAndFail = (err: any): void => {
+        setTimeout(() => {
+          videoQueue.push(...redoQueue);
+          videoQueue.forEach(task => {
+            try {
+              if (task.process)
+                task.process.kill();
+            }
+            catch {}
+          });
+          reject(err);
+        });
+      };
 
-        const checkQueue = (): void => {
-          if (running < simultaneousMax && videoQueue.length > 0) {
-            const task = videoQueue.splice(0, 1)[0];
+      const startTask = (task: VideoRender): void => {
+          task.process = spawn('HandBrakeCLI', task.args, { maxbuffer: 20971520 });
+          task.promise = monitorProcess(task.process, (data, stream, done) =>
+            videoProgress(data, stream, task.name, done, progress), ErrorMode.DEFAULT, 4096);
+      };
 
-            ++running;
-            startTask(task);
-            task.promise.then(() => {
-              rename(tmp(task.videoPath), task.videoPath).finally(() => {
-                --running;
-                checkQueue();
-              });
-            }).catch(err => {
+      const checkQueue = (): void => {
+        if (running < simultaneousMax && (videoQueue.length > 0 || (running === 1 && redoQueue.length > 0))) {
+          const task = videoQueue.pop() || redoQueue.splice(0, 1)[0];
+
+          ++running;
+          startTask(task);
+          task.promise.then(() => {
+            rename(tmp(task.videoPath), task.videoPath).finally(() => {
               --running;
-
-              if (err.code === 3221225477) {
-                const percentDone = progress.percent?.get(task.name) || 0;
-
-                if (++task.tries < 3 && percentDone < 10) {
-                  videoQueue.splice(0, 0, task);
-                  videoProgress('', -1, task.name, true);
-                  checkQueue();
-                }
-                else {
-                  redoQueue.push(task);
-                  videoProgress('', -1, task.name, true);
-                }
-              }
-              else
-                reject(err);
+              checkQueue();
             });
+          }).catch(err => {
+            task.process = undefined;
+            --running;
 
-            checkQueue();
-          }
-          else if (running === 0 && redoQueue.length > 0) {
-            const task = redoQueue.splice(0, 1)[0];
+            if (err.code === 3221225477) {
+              const percentDone = progress.percent?.get(task.name) || 0;
 
-            startTask(task);
-            task.promise.then(() => checkQueue()).catch(err => reject(err));
-          }
-          else if (running === 0)
-            resolve();
-        };
+              if (++task.tries < 4 && percentDone < 10) {
+                videoQueue.splice(0, 0, task);
+                videoProgress('', -1, task.name, true, progress);
+                checkQueue();
+              }
+              else {
+                redoQueue.push(task);
+                videoProgress('', -1, task.name, true, progress);
+              }
+            }
+            else
+              cleanUpAndFail(err);
+          });
 
-        checkQueue();
-      })();
+          checkQueue();
+        }
+        else if (running === 0 && redoQueue.length > 0) {
+          const task = redoQueue.splice(0, 1)[0];
+
+          startTask(task);
+          task.promise.then(() => rename(tmp(task.videoPath), task.videoPath).finally(() => checkQueue()))
+          .catch(err => cleanUpAndFail(err)).finally(() => task.process === undefined);
+        }
+        else if (running === 0)
+          resolve();
+      };
+
+      checkQueue();
     });
 
     console.log();
