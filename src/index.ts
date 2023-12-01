@@ -13,7 +13,7 @@ import { ChildProcess } from 'child_process';
 const isWindows = (os.platform() === 'win32');
 const isLinux = (os.platform() === 'linux');
 const VIDEO_SOURCE = (isWindows ? 'V:' : isLinux ? '/mnt/video' : '/Volumes/video');
-const STREAM_SHARE = (isWindows ? 'S:' : isLinux ? '/mnt/streaming' : '/Volumes/video');
+const STREAM_SHARE = (isWindows ? 'S:' : isLinux ? '/mnt/streaming' : '/Volumes/streaming');
 const EARLIEST_CHECK = Date.now() - 7000 * 86_400_000;
 const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
