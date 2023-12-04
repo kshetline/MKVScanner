@@ -10,7 +10,9 @@
   "license": "MIT",
   "dependencies": {
     "@tubular/math": "^3.3.1",
-    "@tubular/util": "^4.14.0"
+    "@tubular/util": "^4.14.0",
+    "promised-sqlite3": "^2.1.0",
+    "sqlite3": "^5.1.6"
   },
   "devDependencies": {
     "@types/node": "^14.18.45",

@@ -9,11 +9,13 @@ import { abs, floor, min, round } from '@tubular/math';
 import { code2Name, lang2to3, lang3to2 } from './lang';
 import * as os from 'os';
 import { ChildProcess } from 'child_process';
+import { AsyncDatabase } from 'promised-sqlite3';
 
 const isWindows = (os.platform() === 'win32');
 const isLinux = (os.platform() === 'linux');
 const VIDEO_SOURCE = (isWindows ? 'V:' : isLinux ? '/mnt/video' : '/Volumes/video');
 const STREAM_SHARE = (isWindows ? 'S:' : isLinux ? '/mnt/streaming' : '/Volumes/streaming');
+const DB_PATH = '/Users/kshetline/temp/BACKUP-20231203-160447/databases/theater.db';
 const EARLIEST_CHECK = Date.now() - 7000 * 86_400_000;
 const CAN_MODIFY = true;
 const CAN_MODIFY_TIMES = true;
@@ -22,8 +24,9 @@ const SKIP_TV = true;
 const SKIP_EXTRAS = true;
 const SHOW_DETAILS = true;
 const UPDATE_EXTRAS_METADATA = false;
-const CREATE_ALTERNATE_AUDIO = true;
+const CREATE_ALTERNATE_AUDIO = false;
 const CREATE_STREAMING_SOURCES = true;
+const UPDATE_DB_METADATA = false;
 
 const NEW_STUFF = new Date('2022-01-01T00:00Z');
 const OLD = new Date('2015-01-01T00:00Z');
@@ -810,6 +813,11 @@ let unchecked = 0;
 let streamingSources = 0;
 
 (async function (): Promise<void> {
+  let db: AsyncDatabase;
+
+  if (UPDATE_DB_METADATA && DB_PATH)
+    db = await AsyncDatabase.open(DB_PATH);
+
   async function checkDir(dir: string, depth = 0): Promise<Counts> {
     const files = (await readdir(dir)).sort(comparator);
     let videos = 0;
@@ -962,6 +970,14 @@ let streamingSources = 0;
           const mediaJson = await monitorProcess(spawn('mediainfo', [path, '--Output=JSON']));
           const mediaTracks = (JSON.parse(mediaJson || '{}') as MediaWrapper).media?.track || [];
           const typeIndices = {} as Record<string, number>;
+
+          if (db) {
+            const uri = path.substring(VIDEO_SOURCE.length);
+            const uriAlt = uri.normalize('NFKC');
+            const mediaJson2 = JSON.stringify(JSON.parse(mediaJson || '{}'), null, 4);
+
+            await db.run('UPDATE VIDEO_INFO SET MEDIA_JSON = ? WHERE URI = ? OR URI = ?', mediaJson2, uri, uriAlt);
+          }
 
           for (const track of mediaTracks) {
             const type = track['@type'].toLowerCase();
@@ -1295,6 +1311,9 @@ let streamingSources = 0;
   }
 
   const counts = await checkDir(VIDEO_SOURCE);
+
+  if (db)
+    await db.close();
 
   console.log('\nVideo count:', counts.videos);
   console.log(`Movies (raw): ${movies}, TV episodes (raw): ${tvShows}, Extras: ${extras}`);
