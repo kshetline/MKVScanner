@@ -655,7 +655,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     process.stdout.write(`    Generating streaming video... `);
 
     await new Promise<void>((resolve, reject) => {
-      const simultaneousMax = isWindows ? 3 : 10;
+      const simultaneousMax = isWindows ? 5 : 10;
       let running = 0;
       const redoQueue: VideoRender[] = [];
 
@@ -706,6 +706,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
               else {
                 redoQueue.push(task);
                 videoProgress('', -1, task.name, true, progress);
+                checkQueue();
               }
             }
             else
