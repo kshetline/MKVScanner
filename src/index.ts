@@ -521,7 +521,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
   const aspect = wd / hd;
 
-  if (h > 1100 || video?.properties.stereo_mode)
+  if (h > 1100 || video?.properties.stereo_mode || await existsAsync(pathJoin(dirname(mpdRoot), 'busy.txt')))
     return false;
 
   const hasDesktopVideo = await existsAsync(mpdPath) || await existsAsync(avPath);
@@ -683,9 +683,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       };
 
       const checkQueue = (): void => {
-        if (running < simultaneousMax && (videoQueue.length > 0 ||
-            (running === 1 && redoQueue.length > 0 && redoQueue[0].tries < 5))) {
-          const task = videoQueue.pop() || redoQueue.splice(0, 1)[0];
+        if (running < simultaneousMax && videoQueue.length > 0) {
+          const task = videoQueue.pop();
 
           ++running;
           startTask(task);
