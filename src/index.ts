@@ -390,10 +390,10 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
   if (stream === 0 || done) {
     const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
 
-    if (done && stream > 0) {
+    if (done && stream > 0)
       progress.errors.set(name, (progress.errors.get(name) || 0) + 1);
+    else if (done && stream < 0)
       progress.starts.delete(name);
-    }
 
     if ($ || (done && stream <= 0)) {
       const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber($[1]), 0.1), 99.9));
