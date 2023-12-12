@@ -367,8 +367,8 @@ interface VideoProgress {
   percent?: Map<string, number>;
   speed?: Map<string, number>;
   errors?: Map<string, number>;
+  starts?: Map<string, number>;
   lastOutput?: string;
-  start?: number;
 }
 
 interface VideoRender {
@@ -385,18 +385,24 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
   progress.speed = progress.speed ?? new Map();
   progress.errors = progress.errors ?? new Map();
   progress.lastOutput = progress.lastOutput ?? '';
-  progress.start = progress.start ?? Date.now();
+  progress.starts = progress.starts ?? new Map();
 
   if (stream === 0 || done) {
     const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
 
-    if (done && stream > 0)
+    if (done && stream > 0) {
       progress.errors.set(name, (progress.errors.get(name) || 0) + 1);
+      progress.starts.delete(name);
+    }
 
     if ($ || (done && stream <= 0)) {
       const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber($[1]), 0.1), 99.9));
       const lastPercent = progress.percent.get(name) ?? -1;
       const duration = (name === '320p' ? 180000 : progress.duration);
+      let start = progress.starts.get(name);
+
+      if (start == null)
+        progress.starts.set(name, start = Date.now());
 
       if (lastPercent !== percent) {
         progress.percent.set(name, percent);
@@ -404,7 +410,7 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
         if (progress.lastOutput)
           process.stdout.write('%\x1B[' + (progress.lastOutput.length + 1) + 'D');
 
-        const elapsed = Date.now() - progress.start;
+        const elapsed = Date.now() - start;
         const resolutions = Array.from(progress.percent.keys()).sort((a, b) => parseInt(a) - parseInt(b));
 
         progress.speed.set(name, stream < 0 ? -1 : duration * percent / 100 / elapsed);
@@ -639,7 +645,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         encodeH = resolution.h;
       }
 
-      if (encodeW !== resolution.w || encodeH !== resolution.h) {
+      if (encodeW !== resolution.w || encodeH !== resolution.h || encodeW < wd * 0.9 || encodeH < hd * 0.9) {
         args.push('-w', round(encodeW).toString(), '-l', round(encodeH).toString());
 
         if (anamorph !== 1)
@@ -658,7 +664,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     process.stdout.write(`    Generating streaming video... `);
 
     await new Promise<void>((resolve, reject) => {
-      const simultaneousMax = isWindows ? 5 : 10;
+      const simultaneousMax = 6;
+      const maxTries = 4;
       let running = 0;
       const redoQueue: VideoRender[] = [];
 
@@ -700,7 +707,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
             if (err.code === 3221225477) {
               const percentDone = progress.percent?.get(task.name) || 0;
 
-              if (++task.tries < 4 && percentDone < 10) {
+              if (++task.tries < maxTries && percentDone < 10) {
                 videoQueue.splice(0, 0, task);
                 videoProgress('', -1, task.name, true, progress);
                 checkQueue();
@@ -722,7 +729,16 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
           startTask(task);
           task.promise.then(() => rename(tmp(task.videoPath), task.videoPath).finally(() => checkQueue()))
-          .catch(err => cleanUpAndFail(err));
+          .catch(err => {
+            if (++task.tries < maxTries) {
+              task.process = undefined;
+              redoQueue.push(task);
+              videoProgress('', -1, task.name, true, progress);
+              checkQueue();
+            }
+            else
+              cleanUpAndFail(err);
+          });
         }
         else if (running === 0)
           resolve();
