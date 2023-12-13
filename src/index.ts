@@ -516,7 +516,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
                                subtitles: SubtitlesTrack[], isMovie: boolean, isExtra: boolean,
                                duration: number): Promise<boolean> {
   const start = Date.now();
-  const resolutions = [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 720, h: 480 }, { w: 640, h: 360 }, { w: 569, h: 320 }];
+  const resolutions = [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 853.33, h: 480 }, { w: 640, h: 360 }, { w: 569, h: 320 }];
   const mpdRoot = STREAM_SHARE + path.substring(VIDEO_SOURCE.length).replace(/\s*\(2[DK]\)/, '').replace(/\.mkv$/, '');
   const mpdPath = mpdRoot + '.mpd';
   const avPath = mpdRoot + '.av.webm';
@@ -631,25 +631,28 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       if (resolution.h === 320) // For sample video clip
         args.push('--start-at', duration < 480000 ? 'duration:0' : 'duration:300', '--stop-at', 'duration:180');
 
-      let encodeW = resolution.w;
+      const targetW = (resolution.h !== 480 || aspect > 1.334 ? resolution.w : 640);
+      let encodeW = targetW;
       let encodeH = resolution.h;
       let anamorph = 1;
 
-      if (resolution.h === 480)
-        anamorph = (aspect >= 1.75 ? 32 / 27 : 8 / 9);
+      encodeH = targetW / aspect;
 
-      if (aspect >= 1.75 && abs(resolution.w - w) > 20)
-        encodeH = resolution.w * anamorph / aspect;
-      else if (aspect < 1.75 && abs(resolution.h - h) > 20) {
-        encodeW = resolution.h / anamorph * aspect;
+      if (encodeH > resolution.h) {
         encodeH = resolution.h;
+        encodeW = targetW * aspect;
       }
 
-      if (encodeW !== resolution.w || encodeH !== resolution.h || encodeW < wd * 0.9 || encodeH < hd * 0.9) {
+      if (resolution.h === 480) {
+        anamorph = (encodeW >= 640 ? 32 / 27 : 8 / 9);
+        encodeW /= anamorph;
+      }
+
+      if (abs(encodeW - w) / w > 0.05 && abs(encodeH - h) / h > 0.05) {
         args.push('-w', round(encodeW).toString(), '-l', round(encodeH).toString());
 
         if (anamorph !== 1)
-          args.push('--custom-anamorphic', '--pixel-aspect', (aspect > 1.34 ? '32:27' : '8:9'));
+          args.push('--custom-anamorphic', '--pixel-aspect', (anamorph > 1 ? '32:27' : '8:9'));
       }
 
       if (subtitleIndex < 0)
