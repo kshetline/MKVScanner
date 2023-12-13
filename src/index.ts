@@ -633,10 +633,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       const targetW = (resolution.h !== 480 || aspect > 1.334 ? resolution.w : 640);
       let encodeW = targetW;
-      let encodeH = resolution.h;
+      let encodeH = targetW / aspect;
       let anamorph = 1;
-
-      encodeH = targetW / aspect;
 
       if (encodeH > resolution.h) {
         encodeH = resolution.h;
