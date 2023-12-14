@@ -665,8 +665,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     process.stdout.write(`    Generating streaming video... `);
 
     await new Promise<void>((resolve, reject) => {
-      const simultaneousMax = 6;
-      const maxTries = 4;
+      const simultaneousMax = isWindows ? 3 : 10;
+      const maxTries = 6;
       let running = 0;
       const redoQueue: VideoRender[] = [];
 
@@ -708,7 +708,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
             if (err.code === 3221225477) {
               const percentDone = progress.percent?.get(task.name) || 0;
 
-              if (++task.tries < maxTries && percentDone < 10) {
+              if (++task.tries < maxTries * 3 / 4 && percentDone < 10 || task.tries < maxTries / 2) {
                 videoQueue.splice(0, 0, task);
                 videoProgress('', -1, task.name, true, progress);
                 checkQueue();
