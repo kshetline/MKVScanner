@@ -369,6 +369,7 @@ interface VideoProgress {
   errors?: Map<string, number>;
   starts?: Map<string, number>;
   lastOutput?: string;
+  readFromError?: boolean;
 }
 
 interface VideoRender {
@@ -387,15 +388,18 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
   progress.lastOutput = progress.lastOutput ?? '';
   progress.starts = progress.starts ?? new Map();
 
-  if (stream === 0 || done) {
+  if (stream === 0 || (data && progress.readFromError) || done) {
     const duration = (name === '320p' ? 180000 : progress.duration);
     let $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
+    let percentStr = '0';
 
-    if (!$) {
+    if ($)
+      percentStr = $[1];
+    else {
       $ = /time=(\d\d):(\d\d):(\d\d(\.\d+)?)/.exec(data);
 
       if ($) // Convert time to percentage
-        $[1] = ((toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3])) * 100 / duration).toString()
+        percentStr = ((toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3])) * 100_000 / duration).toString()
     }
 
     if (done && stream > 0)
@@ -404,7 +408,7 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
       progress.starts.delete(name);
 
     if ($ || (done && stream <= 0)) {
-      const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber($[1]), 0.1), 99.9));
+      const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber(percentStr), 0.1), 99.9));
       const lastPercent = progress.percent.get(name) ?? -1;
       let start = progress.starts.get(name);
 
@@ -622,7 +626,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
       const mixdown = mono || !surround ? [] : ['-af', 'aresample=matrix_encoding=dplii'];
-      const args = ['-i', path, '-c:v', ...codec, '-crf', '24'];
+      const args = ['-y', '-progress', '-', '-nostats', '-i', path, '-c:v', ...codec, '-crf', '24'];
 
       if (!small)
         dashVideos.push(videoPath);
@@ -637,7 +641,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       if (encodeH > resolution.h) {
         encodeH = resolution.h;
-        encodeW = targetW * aspect;
+        encodeW = resolution.h * aspect;
       }
 
       if (resolution.h === 480) {
@@ -646,7 +650,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       }
 
       if (abs(encodeW - w) / w > 0.05 && abs(encodeH - h) / h > 0.05) {
-        args.push('-s', `${round(encodeW)}x${round(encodeH)}`);
+        args.push('-s', `${round(encodeW, 2)}x${round(encodeH, 2)}`);
 
         if (anamorph !== 1)
           args.push('-sar', (anamorph > 1 ? '32:27' : '8:9'));
@@ -706,7 +710,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
               --running;
               checkQueue();
             });
-          }).catch(err => {
+          }).catch(() => {
             task.process = undefined;
             --running;
 
