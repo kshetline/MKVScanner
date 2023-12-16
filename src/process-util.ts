@@ -36,6 +36,15 @@ function psQuoteEscape(arg: string): string {
     return '"' + arg + arg.replace(/([`$])/g, '`$1') + '"';
 }
 
+function linuxEscape(arg: string): string {
+  if (!/[ (){}@?|$%<>`'"^*+]/.test(arg))
+    return arg;
+  else if (!/'/.test(arg))
+    return "'" + arg.replace(/\\/g, '\\\\') + "'";
+  else
+    return '"' + arg + arg.replace(/([\\"])/g, '\\$1') + '"';
+}
+
 function errorish(s: string): boolean {
   s = stripFormatting(s);
 
@@ -64,6 +73,11 @@ export function spawn(command: string, uidOrArgs?: string[] | number, optionsOrA
   if (options?.shell?.toString().toLowerCase() === 'powershell.exe') {
     command = psQuoteEscape(command);
     args.forEach((arg, i) => args[i] = psQuoteEscape(arg));
+  }
+  else if (options?.shell?.toString().toLowerCase() === 'wsl') {
+    args.splice(0, 0, 'bash', command);
+    command = 'wsl';
+    args.forEach((arg, i) => args[i] = linuxEscape(arg));
   }
 
   if (uid != null) {

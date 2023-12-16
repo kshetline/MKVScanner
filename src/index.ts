@@ -388,7 +388,15 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
   progress.starts = progress.starts ?? new Map();
 
   if (stream === 0 || done) {
-    const $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
+    const duration = (name === '320p' ? 180000 : progress.duration);
+    let $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
+
+    if (!$) {
+      $ = /time=(\d\d):(\d\d):(\d\d(\.\d+)?)/.exec(data);
+
+      if ($) // Convert time to percentage
+        $[1] = ((toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3])) * 100 / duration).toString()
+    }
 
     if (done && stream > 0)
       progress.errors.set(name, (progress.errors.get(name) || 0) + 1);
@@ -398,7 +406,6 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
     if ($ || (done && stream <= 0)) {
       const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber($[1]), 0.1), 99.9));
       const lastPercent = progress.percent.get(name) ?? -1;
-      const duration = (name === '320p' ? 180000 : progress.duration);
       let start = progress.starts.get(name);
 
       if (start == null)
@@ -609,27 +616,19 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
         continue;
 
       const small = resolution.h < 480;
-      const format = (small ? 'av_mp4' : 'av_webm');
-      const codec = (small ? 'x264' : 'VP9');
-      const audioCodec = (small ? 'av_aac' : 'vorbis');
+      const format = (small ? 'mp4' : 'webm');
+      const codec = (small ? ['h264'] : ['vp9', '-row-mt', '1']);
+      const audioCodec = (small ? 'aac' : 'libvorbis');
       const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
-      const args = ['-f', format, '-e', codec, '-q', '24', '--crop-mode', 'none', '-a'];
-      const mixdown = (mono ? 'mono' : (surround ? 'dpl2' : 'stereo'));
+      const mixdown = mono || !surround ? [] : ['-af', 'aresample=matrix_encoding=dplii'];
+      const args = ['-i', path, '-c:v', ...codec, '-crf', '24'];
 
       if (!small)
         dashVideos.push(videoPath);
 
       if (await existsAsync(videoPath))
         continue;
-
-      if ((groupedVideoCount === 1 || small) && audioIndex >= 0)
-        args.push((audioIndex + 1).toString(), '-E', audioCodec, '-R', '44.1', '-B', mono ? '96' : '128', '--mixdown', mixdown);
-      else
-        args.push('none');
-
-      if (resolution.h === 320) // For sample video clip
-        args.push('--start-at', duration < 480000 ? 'duration:0' : 'duration:300', '--stop-at', 'duration:180');
 
       const targetW = (resolution.h !== 480 || aspect > 1.334 ? resolution.w : 640);
       let encodeW = targetW;
@@ -647,25 +646,31 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       }
 
       if (abs(encodeW - w) / w > 0.05 && abs(encodeH - h) / h > 0.05) {
-        args.push('-w', round(encodeW).toString(), '-l', round(encodeH).toString());
+        args.push('-s', `${round(encodeW)}x${round(encodeH)}`);
 
         if (anamorph !== 1)
-          args.push('--custom-anamorphic', '--pixel-aspect', (anamorph > 1 ? '32:27' : '8:9'));
+          args.push('-sar', (anamorph > 1 ? '32:27' : '8:9'));
       }
 
-      if (subtitleIndex < 0)
-        args.push('-s', 'none');
-      else
-        args.push('-s', (subtitleIndex + 1).toString(), '--subtitle-burned=1');
+      if (resolution.h === 320) // For sample video clip
+        args.push('-ss', duration < 480000 ? '00:00:00' : '00:05:00', '-t', '180'); // TODO: Handle non-image subtitles
 
-      args.push('--no-markers', '-i', path, '-o', tmp(videoPath));
+      if (subtitleIndex >= 0) // TODO: Handle non-image subtitles
+        args.push('-filter_complex', `[0:v][0:s:${subtitleIndex}]overlay[v]`, '-map', '[v]');
+
+      if ((groupedVideoCount === 1 || small) && audioIndex >= 0)
+        args.push(`-c:a:${audioIndex}`, audioCodec, '-ac', mono ? '1' : '2', '-ar', '44100', '-b:a', mono ? '96k' : '128k', ...mixdown);
+      else
+        args.push('-an');
+
+      args.push('-f', format, tmp(videoPath));
       videoQueue.push({ args, name: resolution.h + 'p', tries: 0, videoPath });
     }
 
     process.stdout.write(`    Generating streaming video... `);
 
     await new Promise<void>((resolve, reject) => {
-      const simultaneousMax = isWindows ? 3 : 10;
+      const simultaneousMax = 6;
       const maxTries = 6;
       let running = 0;
       const redoQueue: VideoRender[] = [];
@@ -685,7 +690,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       };
 
       const startTask = (task: VideoRender): void => {
-          task.process = spawn('HandBrakeCLI', task.args, { maxbuffer: 20971520 });
+          task.process = spawn('ffmpeg', task.args, { maxbuffer: 20971520 });
           task.promise = monitorProcess(task.process, (data, stream, done) =>
             videoProgress(data, stream, task.name, done, progress), ErrorMode.DEFAULT, 4096);
       };
@@ -705,22 +710,18 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
             task.process = undefined;
             --running;
 
-            if (err.code === 3221225477) {
-              const percentDone = progress.percent?.get(task.name) || 0;
+            const percentDone = progress.percent?.get(task.name) || 0;
 
-              if (++task.tries < maxTries * 3 / 4 && percentDone < 10 || task.tries < maxTries / 2) {
-                videoQueue.splice(0, 0, task);
-                videoProgress('', -1, task.name, true, progress);
-                checkQueue();
-              }
-              else {
-                redoQueue.push(task);
-                videoProgress('', -1, task.name, true, progress);
-                checkQueue();
-              }
+            if (++task.tries < maxTries * 3 / 4 && percentDone < 10 || task.tries < maxTries / 2) {
+              videoQueue.splice(0, 0, task);
+              videoProgress('', -1, task.name, true, progress);
+              checkQueue();
             }
-            else
-              cleanUpAndFail(err);
+            else {
+              redoQueue.push(task);
+              videoProgress('', -1, task.name, true, progress);
+              checkQueue();
+            }
           });
 
           checkQueue();
