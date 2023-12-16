@@ -391,15 +391,15 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
   if (stream === 0 || (data && progress.readFromError) || done) {
     const duration = (name === '320p' ? 180000 : progress.duration);
     let $ = /task.+,\s*(\d+\.\d+)\s*%/.exec(data);
-    let percentStr = '0';
+    let rawPercent = 0;
 
     if ($)
-      percentStr = $[1];
+      rawPercent = toNumber($[1]);
     else {
       $ = /time=(\d\d):(\d\d):(\d\d(\.\d+)?)/.exec(data);
 
       if ($) // Convert time to percentage
-        percentStr = ((toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3])) * 100_000 / duration).toString()
+        rawPercent = (toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3])) * 100_000 / duration;
     }
 
     if (done && stream > 0)
@@ -408,7 +408,7 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
       progress.starts.delete(name);
 
     if ($ || (done && stream <= 0)) {
-      const percent = stream < 0 ? -1 : (done ? 100 : min(round(toNumber(percentStr), 0.1), 99.9));
+      const percent = stream < 0 ? -1 : (done ? 100 : min(round(rawPercent, 0.1), 99.9));
       const lastPercent = progress.percent.get(name) ?? -1;
       let start = progress.starts.get(name);
 
@@ -848,6 +848,9 @@ let streamingSources = 0;
     for (let file of files) {
       let path = pathJoin(dir, file);
       const stat = await safeLstat(path);
+
+      if (depth === 0 && comparator(file, 'Inside') < 0)
+        continue;
 
       if (!stat || file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
         // Do nothing
