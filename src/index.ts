@@ -565,7 +565,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   let audioArgs: string[];
 
   if (audioIndex >= 0)
-    audioArgs = [`-c:a:${audioIndex}`, 'libvorbis', '-ac', mono ? '1' : '2', '-ar', '44100', '-b:a', mono ? '96k' : '128k', ...mixdown];
+    audioArgs = [`-c:a:${audioIndex}`, 'libvorbis', '-ac', mono ? '1' : '2', '-ar', '44100', '-b:a',
+                 mono ? '96k' : '128k', ...mixdown];
 
   console.log('    Generating streaming content started at', new Date().toLocaleString());
 
@@ -573,7 +574,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     audioPath = `${mpdRoot}.${groupedVideoCount === 0 ? 'av' : 'audio'}.webm`;
 
     if (!await existsAsync(audioPath)) {
-      const args = ['-i', path, '-vn', ...audioArgs, '-dash', '1', '-f', 'webm', tmp(audioPath)];
+      const args = ['-i', path, '-vn', '-sn', ...audioArgs, '-dash', '1', '-f', 'webm', tmp(audioPath),
+                    '-map_chapters', '-1'];
       const progress: Progress = {};
 
       if (groupedVideoCount === 0)
@@ -656,6 +658,8 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       if (subtitleIndex >= 0) // TODO: Handle non-image subtitles
         args.push('-filter_complex', `[0:v][0:s:${subtitleIndex}]overlay[v]`, '-map', '[v]');
+      else
+        args.push('-sn');
 
       if ((groupedVideoCount === 1 || small) && audioIndex >= 0) {
         args.push(...audioArgs);
@@ -669,7 +673,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       if (!small)
         args.push('-dash', '1');
 
-      args.push('-f', format, tmp(videoPath));
+      args.push('-map_chapters', '-1', '-f', format, tmp(videoPath));
       videoQueue.push({ args, name: resolution.h + 'p', tries: 0, videoPath });
     }
 
