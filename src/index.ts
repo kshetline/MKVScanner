@@ -849,9 +849,6 @@ let streamingSources = 0;
       let path = pathJoin(dir, file);
       const stat = await safeLstat(path);
 
-      if (depth === 0 && comparator(file, 'Inside') < 0)
-        continue;
-
       if (!stat || file.startsWith('.') || file.endsWith('~') || file.includes(' ~.') || stat.isSymbolicLink()) {
         // Do nothing
       }
