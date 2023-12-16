@@ -363,11 +363,11 @@ function aacProgress(data: string, stream: number, progress: Progress): void {
 }
 
 interface VideoProgress {
+  start: number;
   duration?: number;
   percent?: Map<string, number>;
   speed?: Map<string, number>;
   errors?: Map<string, number>;
-  starts?: Map<string, number>;
   lastOutput?: string;
   readFromError?: boolean;
 }
@@ -386,7 +386,6 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
   progress.speed = progress.speed ?? new Map();
   progress.errors = progress.errors ?? new Map();
   progress.lastOutput = progress.lastOutput ?? '';
-  progress.starts = progress.starts ?? new Map();
 
   if (stream === 0 || (data && progress.readFromError) || done) {
     const duration = (name === '320p' ? 180000 : progress.duration);
@@ -399,21 +398,15 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
       $ = /time=(\d\d):(\d\d):(\d\d(\.\d+)?)/.exec(data);
 
       if ($) // Convert time to percentage
-        rawPercent = (toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3])) * 100_000 / duration;
+        rawPercent = (toInt($[1]) * 3600 + toInt($[2]) * 60 + toNumber($[3])) * 100_000 / duration;
     }
 
     if (done && stream > 0)
       progress.errors.set(name, (progress.errors.get(name) || 0) + 1);
-    else if (done && stream < 0)
-      progress.starts.delete(name);
 
-    if ($ || (done && stream <= 0)) {
+    if ($ || rawPercent || (done && stream <= 0)) {
       const percent = stream < 0 ? -1 : (done ? 100 : min(round(rawPercent, 0.1), 99.9));
       const lastPercent = progress.percent.get(name) ?? -1;
-      let start = progress.starts.get(name);
-
-      if (start == null)
-        progress.starts.set(name, start = Date.now());
 
       if (lastPercent !== percent) {
         progress.percent.set(name, percent);
@@ -421,7 +414,7 @@ function videoProgress(data: string, stream: number, name: string, done: boolean
         if (progress.lastOutput)
           process.stdout.write('%\x1B[' + (progress.lastOutput.length + 1) + 'D');
 
-        const elapsed = Date.now() - start;
+        const elapsed = Date.now() - progress.start;
         const resolutions = Array.from(progress.percent.keys()).sort((a, b) => parseInt(a) - parseInt(b));
 
         progress.speed.set(name, stream < 0 ? -1 : duration * percent / 100 / elapsed);
@@ -562,12 +555,17 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const audioIndex = audio ? audios.findIndex(a => a === audio) : -1;
   let audioPath: string;
 
-  if (path.includes('Star Trek - 01 - The Original Series'))
+  if (path.includes('Star Trek - 01 - The Original Series')) // Surround tracks from these videos mix down terribly to stereo for some odd reason.
     audio = audios.find(a => a.codec === 'AAC' && a.properties.audio_channels <= 2) ||
       audios.find(a => a.properties.audio_channels <= 2) || audios[0];
 
   const mono = audio.properties.audio_channels === 1;
   const surround = audio.properties.audio_channels > 3;
+  const mixdown = mono || !surround ? [] : ['-af', 'aresample=matrix_encoding=dplii'];
+  let audioArgs: string[];
+
+  if (audioIndex >= 0)
+    audioArgs = [`-c:a:${audioIndex}`, 'libvorbis', '-ac', mono ? '1' : '2', '-ar', '44100', '-b:a', mono ? '96k' : '128k', ...mixdown];
 
   console.log('    Generating streaming content started at', new Date().toLocaleString());
 
@@ -575,8 +573,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     audioPath = `${mpdRoot}.${groupedVideoCount === 0 ? 'av' : 'audio'}.webm`;
 
     if (!await existsAsync(audioPath)) {
-      const args = ['-i', path, '-vn', '-map', '0:a:' + audioIndex, '-acodec', 'libvorbis', '-ab', mono ? '96k' : '128k',
-                    '-ac', mono ? '1' : '2', '-dash', '1', '-f', 'webm', tmp(audioPath)];
+      const args = ['-i', path, '-vn', ...audioArgs, '-dash', '1', '-f', 'webm', tmp(audioPath)];
       const progress: Progress = {};
 
       if (groupedVideoCount === 0)
@@ -613,7 +610,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
   if (video) {
     const videoQueue: VideoRender[] = [];
-    const progress: VideoProgress = { duration };
+    const progress: VideoProgress = { start: Date.now(), duration, readFromError: true };
 
     for (const resolution of resolutions) {
       if (shouldSkipVideo(resolution.w, resolution.h))
@@ -622,11 +619,9 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       const small = resolution.h < 480;
       const format = (small ? 'mp4' : 'webm');
       const codec = (small ? ['h264'] : ['vp9', '-row-mt', '1']);
-      const audioCodec = (small ? 'aac' : 'libvorbis');
       const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
-      const mixdown = mono || !surround ? [] : ['-af', 'aresample=matrix_encoding=dplii'];
-      const args = ['-y', '-progress', '-', '-nostats', '-i', path, '-c:v', ...codec, '-crf', '24'];
+      const args = ['-y', '-progress', '-', '-i', path, '-c:v', ...codec, '-crf', '24'];
 
       if (!small)
         dashVideos.push(videoPath);
@@ -662,10 +657,17 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       if (subtitleIndex >= 0) // TODO: Handle non-image subtitles
         args.push('-filter_complex', `[0:v][0:s:${subtitleIndex}]overlay[v]`, '-map', '[v]');
 
-      if ((groupedVideoCount === 1 || small) && audioIndex >= 0)
-        args.push(`-c:a:${audioIndex}`, audioCodec, '-ac', mono ? '1' : '2', '-ar', '44100', '-b:a', mono ? '96k' : '128k', ...mixdown);
+      if ((groupedVideoCount === 1 || small) && audioIndex >= 0) {
+        args.push(...audioArgs);
+
+        if (small)
+          args[args.indexOf('libvorbis')] = 'aac';
+      }
       else
         args.push('-an');
+
+      if (!small)
+        args.push('-dash', '1');
 
       args.push('-f', format, tmp(videoPath));
       videoQueue.push({ args, name: resolution.h + 'p', tries: 0, videoPath });
