@@ -342,7 +342,7 @@ function aacProgress(data: string, stream: number, progress: Progress): void {
   if (stream === 1) {
     let $: RegExpExecArray;
 
-    if (progress.duration < 1 && ($ = /\bDURATION\b\s*:\s*(\d\d):(\d\d):(\d\d)/.exec(data)))
+    if (progress.duration < 1 && ($ = /\bduration\b\s*:\s*(\d\d):(\d\d):(\d\d)/i.exec(data)))
       progress.duration = toInt($[1]) * 3600 + toInt($[2]) * 60 + toInt($[3]);
 
     if (progress.duration > 0 && ($ = /.*\btime=(\d\d):(\d\d):(\d\d)/.exec(data))) {
