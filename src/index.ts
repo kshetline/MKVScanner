@@ -624,6 +624,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       const ext = (small ? (resolution.h === 320 ? 'sample.mp4' : 'mobile.mp4') : 'webm');
       const videoPath = `${mpdRoot}${small ? '' : '.' + (groupedVideoCount === 1 ? 'av' : 'v' + resolution.h)}.${ext}`;
       const args = ['-y', '-progress', '-', '-i', path, '-c:v', ...codec, '-crf', '24'];
+      let hasAudio = false;
 
       if (!small)
         dashVideos.push(videoPath);
@@ -663,6 +664,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
       if ((groupedVideoCount === 1 || small) && audioIndex >= 0) {
         args.push(...audioArgs);
+        hasAudio = true;
 
         if (small)
           args[args.indexOf('libvorbis')] = 'aac';
@@ -670,7 +672,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
       else
         args.push('-an');
 
-      if (!small)
+      if (!small && !hasAudio)
         args.push('-dash', '1');
 
       args.push('-map_chapters', '-1', '-f', format, tmp(videoPath));
