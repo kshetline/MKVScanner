@@ -1,4 +1,4 @@
-import { mkdirSync, Stats } from 'fs';
+import { mkdirSync, openSync, Stats } from 'fs';
 import { lstat, mkdtemp, readdir, readFile, rename, unlink, utimes, writeFile } from 'fs/promises';
 import { dirname, join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
@@ -526,12 +526,12 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
   const avPath = mpdRoot + '.av.webm';
   const mobilePath = mpdRoot + '.mobile.mp4';
   const samplePath = mpdRoot + '.sample.mp4';
-  const errorReportPath = STREAM_SHARE + pathJoin(dirname(path.substring(VIDEO_SOURCE.length)), 'error-report.txt');
+  const busyPath = mpdRoot + '.busy';
   const [w, h] = (video?.properties.pixel_dimensions || '1x1').split('x').map(d => toInt(d));
   const [wd, hd] = (video?.properties.display_dimensions || '1x1').split('x').map(d => toInt(d));
   const aspect = wd / hd;
 
-  if (h > 1100 || video?.properties.stereo_mode || await existsAsync(pathJoin(dirname(mpdRoot), 'busy.txt')))
+  if (h > 1100 || video?.properties.stereo_mode)
     return false;
 
   const hasDesktopVideo = await existsAsync(mpdPath) || await existsAsync(avPath);
@@ -545,6 +545,13 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
   if (!await existsAsync(parent))
     mkdirSync(parent, { recursive: true });
+
+  try {
+    openSync(busyPath, 'wx');
+  }
+  catch {
+    return false;
+  }
 
   const shouldSkipVideo = (streamW: number, streamH: number): boolean =>
     (!isMovie && streamH === 1080) || (isExtra && streamH > 480) || (streamW > w * 1.25 && streamH > h * 1.25) ||
@@ -595,7 +602,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
           process.stdout.write('# ');
 
           if (i === audios.length - 1) {
-            await writeFile(errorReportPath, (e.message || e.toString()) + (e.output ? '\n\n' + e.output : ''));
+            await safeUnlink(busyPath);
             throw e;
           }
 
@@ -796,7 +803,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     }
     catch (e) {
       console.error(e);
-      await writeFile(errorReportPath, (e.message || e.toString()) + (e.output ? '\n\n' + e.output : ''));
+      await safeUnlink(busyPath);
       throw e;
     }
 
@@ -818,6 +825,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
 
   console.log('    Total time generating streaming content: %s (%sx)',
     formatTime(elapsed * 1000000).slice(0, -3), (duration / elapsed).toFixed(2));
+  await safeUnlink(busyPath);
 
   return true;
 }
