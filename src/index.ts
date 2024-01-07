@@ -1,4 +1,4 @@
-import { mkdirSync, openSync, Stats } from 'fs';
+import { closeSync, mkdirSync, openSync, Stats } from 'fs';
 import { lstat, mkdtemp, readdir, readFile, rename, unlink, utimes, writeFile } from 'fs/promises';
 import { dirname, join as pathJoin, sep as pathSeparator } from 'path';
 import { ErrorMode, monitorProcess, spawn } from './process-util';
@@ -547,7 +547,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
     mkdirSync(parent, { recursive: true });
 
   try {
-    openSync(busyPath, 'wx');
+    closeSync(openSync(busyPath, 'wx'));
   }
   catch {
     return false;
