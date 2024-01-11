@@ -521,7 +521,7 @@ async function createStreaming(path: string, audios: AudioTrack[], video: VideoT
                                duration: number): Promise<boolean> {
   const start = Date.now();
   const resolutions = [{ w: 1920, h: 1080 }, { w: 1280, h: 720 }, { w: 853.33, h: 480 }, { w: 640, h: 360 }, { w: 569, h: 320 }];
-  const mpdRoot = STREAM_SHARE + path.substring(VIDEO_SOURCE.length).replace(/\s*\([234][DK]\)/, '').replace(/\.mkv$/, '');
+  const mpdRoot = STREAM_SHARE + path.substring(VIDEO_SOURCE.length).replace(/\s*\([234][DK]\)(?!.*[/\\].*)/, '').replace(/\.mkv$/, '');
   const mpdPath = mpdRoot + '.mpd';
   const avPath = mpdRoot + '.av.webm';
   const mobilePath = mpdRoot + '.mobile.mp4';
